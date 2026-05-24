@@ -6,16 +6,36 @@ import math
 import datetime
 import requests
 
-# --- ฟังก์ชันดึงราคาน้ำมันอัตโนมัติ (ดีเซล ปตท.) ---
-@st.cache_data(ttl=3600) # โหลดข้อมูลใหม่ทุก 1 ชั่วโมง เพื่อไม่ให้เว็บอืด
-def get_auto_fuel_price():
+# --- ฟังก์ชันดึงราคาน้ำมันอัตโนมัติ (ดึงมาทุกชนิดของ ปตท.) ---
+@st.cache_data(ttl=3600) # อัปเดตทุก 1 ชั่วโมง
+def get_auto_fuel_prices():
+    # ราคาสำรองเผื่อกรณีเว็บ API ของรัฐล่ม
+    fallback_prices = {
+        "Diesel": 32.94,
+        "Gasohol 95": 36.55,
+        "Gasohol 91": 36.18,
+        "Gasohol E20": 34.44,
+        "Benzine": 44.34
+    }
     try:
         url = "https://api.chnwt.dev/thai-oil-api/latest"
         res = requests.get(url, timeout=5).json()
-        price = res['response']['stations']['ptt']['Diesel']['price']
-        return float(price)
+        ptt_data = res.get('response', {}).get('stations', {}).get('ptt', {})
+        
+        if not ptt_data:
+            return fallback_prices
+            
+        fetched_prices = {}
+        for name, info in ptt_data.items():
+            if isinstance(info, dict) and 'price' in info and info['price']:
+                try:
+                    fetched_prices[name] = float(info['price'])
+                except (ValueError, TypeError):
+                    pass
+                    
+        return fetched_prices if fetched_prices else fallback_prices
     except Exception:
-        return 32.50 # ราคาสำรองหากดึงข้อมูลไม่ได้
+        return fallback_prices
 
 # --- ฟังก์ชันดึงเส้นทางถนนจริงจาก OSRM ---
 def get_osrm_route(df):
@@ -64,7 +84,7 @@ if uploaded_file is not None:
             st.subheader("📝 1. ข้อมูลสถานที่ต้นทางและลูกค้า")
             edited_df = st.data_editor(df, num_rows="dynamic", use_container_width=True)
 
-            # บังคับต่อท้ายด้วยจุดเริ่มต้นเสมอ (Closed-Loop) โดยไม่ต้องเลือก Algorithm
+            # บังคับต่อท้ายด้วยจุดเริ่มต้นเสมอ (Closed-Loop)
             optimized_df = pd.concat([edited_df, edited_df.iloc[[0]]], ignore_index=True)
             st.success("✅ ระบบใช้ลำดับการวิ่งตามไฟล์ของคุณ และได้เพิ่มขากลับเข้าจุดเริ่มต้น (Closed-Loop) ให้อัตโนมัติแล้ว")
 
@@ -81,17 +101,24 @@ if uploaded_file is not None:
                 with t_col1: empty_speed = st.number_input("ความเร็วรถเปล่า (กม./ชม.)", value=60.0)
                 with t_col2: full_speed = st.number_input("ความเร็วบรรทุกเต็ม (กม./ชม.)", value=40.0)
                 with t_col3: max_capacity = st.number_input("ความจุรถสูงสุด (กก.)", value=1000.0)
-                # ตั้งค่า Default เป็น 11:00
-                with t_col4: start_time = st.time_input("เวลาออกเดินทาง", datetime.time(11, 0))
+                with t_col4: start_time = st.time_input("เวลาออกเดินทาง", datetime.time(11, 0)) # ค่าเริ่มต้น 11:00
                 
-                c_col1, c_col2, c_col3 = st.columns(3)
-                # ตั้งค่าเวลาลงของ Default เป็น 3 นาที
-                with c_col1: service_time = st.number_input("เวลาลงของ/จุด (นาที)", value=3)
+                c_col1, c_col2, c_col3, c_col4 = st.columns(4)
+                with c_col1: service_time = st.number_input("เวลาลงของ/จุด (นาที)", value=3) # ค่าเริ่มต้น 3 นาที
                 with c_col2: fuel_rate = st.number_input("สิ้นเปลือง (กม./ลิตร)", value=10.0)
                 
-                # ดึงราคาน้ำมันออโต้มาเป็นค่าเริ่มต้น
-                today_fuel_price = get_auto_fuel_price()
-                with c_col3: fuel_price = st.number_input("ราคาน้ำมัน ดีเซล (บาท/ลิตร) อัปเดตล่าสุด", value=today_fuel_price)
+                # --- ระบบดึงราคาน้ำมัน ปตท. อัตโนมัติ ---
+                fuel_prices_dict = get_auto_fuel_prices()
+                fuel_options = list(fuel_prices_dict.keys())
+                
+                # พยายามหาคำว่า Diesel เพื่อตั้งเป็นค่า Default ก่อน
+                default_index = fuel_options.index("Diesel") if "Diesel" in fuel_options else 0
+                
+                with c_col3: 
+                    selected_fuel = st.selectbox("ชนิดน้ำมัน (ดึงราคา ปตท. ล่าสุด)", fuel_options, index=default_index)
+                with c_col4: 
+                    # ให้กล่องนี้ดึงราคาจากชนิดน้ำมันที่เลือกมาโชว์ และแก้ไขเองได้
+                    fuel_price = st.number_input(f"ราคา {selected_fuel} (บาท/ลิตร)", value=float(fuel_prices_dict.get(selected_fuel, 32.50)))
 
             if has_weight:
                 weight_list = pd.to_numeric(optimized_df[col_weight], errors='coerce').fillna(0).tolist()
@@ -165,7 +192,7 @@ if uploaded_file is not None:
 
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("ระยะทางรวมทั้งสิ้น", f"{total_distance:.2f} กม.")
-            m2.metric("ต้นทุนน้ำมันรวม", f"฿{(total_distance/fuel_rate * fuel_price) if fuel_rate > 0 else 0:.2f}")
+            m2.metric(f"ต้นทุนน้ำมัน ({selected_fuel})", f"฿{(total_distance/fuel_rate * fuel_price) if fuel_rate > 0 else 0:.2f}")
             m3.metric("เวลาที่ใช้อยู่บนถนน", f"{int(total_travel_mins//60)} ชม. {int(total_travel_mins%60)} น.")
             m4.metric("เวลาจบงาน (ถึงจุดเริ่มต้น)", f"{int(total_time_mins//60)} ชม. {int(total_time_mins%60)} น.")
 
