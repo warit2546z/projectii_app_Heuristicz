@@ -258,32 +258,32 @@ if uploaded_file is not None:
             has_real_dist = col_real_dist in optimized_df.columns
 
             st.markdown("---")
-            with st.expander("⚙️ 3. ตั้งค่าพารามิเตอร์รถขนส่ง", expanded=True):
+            with st.expander("⚙️ 3. ตั้งค่าพารามิเตอร์รถขนส่งและสิ่งแวดล้อม", expanded=True):
                 t_col1, t_col2, t_col3, t_col4 = st.columns(4)
                 with t_col1: empty_speed = st.number_input("ความเร็วรถเปล่า (กม./ชม.)", value=60.0)
                 with t_col2: full_speed = st.number_input("ความเร็วบรรทุกเต็ม (กม./ชม.)", value=40.0)
                 with t_col3: max_capacity = st.number_input("ความจุรถสูงสุด (กก.)", value=1000.0)
                 with t_col4: start_time = st.time_input("เวลาออกเดินทาง", datetime.time(11, 0))
                 
-                c_col1, c_col2, c_col3, c_col4 = st.columns(4)
+                # --- ขยับช่อง CO2 เข้ามาไว้ข้างๆ อัตราสิ้นเปลือง ---
+                c_col1, c_col2, c_col3, c_col4, c_col5 = st.columns(5)
                 with c_col1: service_time = st.number_input("เวลาลงของ/จุด (นาที)", value=3)
                 with c_col2: fuel_rate = st.number_input("สิ้นเปลือง (กม./ลิตร)", value=10.0)
+                with c_col3: co2_rate = st.number_input("ปล่อย CO2 (kg/ลิตร)", value=2.68)
                 
-                # --- เมนูดึงราคาน้ำมันอัตโนมัติ ---
                 fuel_prices_dict = get_auto_fuel_prices()
                 fuel_options = list(fuel_prices_dict.keys())
                 
-                # ค้นหาคำว่า "Diesel" หรือ "ดีเซล" แบบครอบคลุม เพื่อล็อคเป็น Default
                 default_index = 0
                 for idx, option in enumerate(fuel_options):
                     if "diesel" in option.lower() or "ดีเซล" in option:
                         default_index = idx
                         break
                 
-                with c_col3: 
-                    selected_fuel = st.selectbox("ชนิดน้ำมัน (ราคา ปตท. ล่าสุด)", fuel_options, index=default_index)
                 with c_col4: 
-                    fuel_price = st.number_input(f"ราคา {selected_fuel} (บาท/ลิตร)", value=float(fuel_prices_dict.get(selected_fuel, 32.50)))
+                    selected_fuel = st.selectbox("ชนิดน้ำมัน", fuel_options, index=default_index)
+                with c_col5: 
+                    fuel_price = st.number_input(f"ราคา (บาท/ลิตร)", value=float(fuel_prices_dict.get(selected_fuel, 32.50)))
 
             if has_weight:
                 weight_list = pd.to_numeric(optimized_df[col_weight], errors='coerce').fillna(0).tolist()
@@ -348,6 +348,9 @@ if uploaded_file is not None:
                 current_weight -= weight_list[i]
                 if current_weight < 0: current_weight = 0
 
+            # --- คำนวณคาร์บอนฟุตพริ้นท์ ---
+            fuel_used = total_distance / fuel_rate if fuel_rate > 0 else 0
+            total_co2 = fuel_used * co2_rate
             total_time_mins = total_travel_mins + ((len(optimized_df) - 1) * service_time)
             
             st.markdown("---")
@@ -357,8 +360,9 @@ if uploaded_file is not None:
 
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("ระยะทางรวมทั้งสิ้น", f"{total_distance:.2f} กม.")
-            m2.metric(f"ต้นทุนน้ำมัน ({selected_fuel})", f"฿{(total_distance/fuel_rate * fuel_price) if fuel_rate > 0 else 0:.2f}")
-            m3.metric("เวลาที่ใช้อยู่บนถนน", f"{int(total_travel_mins//60)} ชม. {int(total_travel_mins%60)} น.")
+            m2.metric(f"ต้นทุนน้ำมัน ({selected_fuel})", f"฿{(fuel_used * fuel_price):.2f}")
+            # --- เปลี่ยนช่องที่ 3 เป็นการแสดงผลคาร์บอนแทน ---
+            m3.metric("คาร์บอนฟุตพริ้นท์ (CO2e)", f"{total_co2:.2f} kg")
             m4.metric("เวลาจบงาน (ถึงจุดเริ่มต้น)", f"{int(total_time_mins//60)} ชม. {int(total_time_mins%60)} น.")
 
             st.dataframe(pd.DataFrame(schedule_data), use_container_width=True)
