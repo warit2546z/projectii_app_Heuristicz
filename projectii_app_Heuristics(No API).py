@@ -263,16 +263,22 @@ if uploaded_file is not None:
                 with t_col1: empty_speed = st.number_input("ความเร็วรถเปล่า (กม./ชม.)", value=60.0)
                 with t_col2: full_speed = st.number_input("ความเร็วบรรทุกเต็ม (กม./ชม.)", value=40.0)
                 with t_col3: max_capacity = st.number_input("ความจุรถสูงสุด (กก.)", value=1000.0)
-                with t_col4: start_time = st.time_input("เวลาออกเดินทาง", datetime.time(11, 0)) # ตั้งต้น 11 โมง
+                with t_col4: start_time = st.time_input("เวลาออกเดินทาง", datetime.time(11, 0))
                 
                 c_col1, c_col2, c_col3, c_col4 = st.columns(4)
-                with c_col1: service_time = st.number_input("เวลาลงของ/จุด (นาที)", value=3) # ตั้งต้น 3 นาที
+                with c_col1: service_time = st.number_input("เวลาลงของ/จุด (นาที)", value=3)
                 with c_col2: fuel_rate = st.number_input("สิ้นเปลือง (กม./ลิตร)", value=10.0)
                 
                 # --- เมนูดึงราคาน้ำมันอัตโนมัติ ---
                 fuel_prices_dict = get_auto_fuel_prices()
                 fuel_options = list(fuel_prices_dict.keys())
-                default_index = fuel_options.index("Diesel") if "Diesel" in fuel_options else 0
+                
+                # ค้นหาคำว่า "Diesel" หรือ "ดีเซล" แบบครอบคลุม เพื่อล็อคเป็น Default
+                default_index = 0
+                for idx, option in enumerate(fuel_options):
+                    if "diesel" in option.lower() or "ดีเซล" in option:
+                        default_index = idx
+                        break
                 
                 with c_col3: 
                     selected_fuel = st.selectbox("ชนิดน้ำมัน (ราคา ปตท. ล่าสุด)", fuel_options, index=default_index)
