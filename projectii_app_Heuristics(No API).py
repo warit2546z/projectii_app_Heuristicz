@@ -9,16 +9,13 @@ import requests
 # --- ฟังก์ชันดึงเส้นทางถนนจริงจาก OSRM (ฟรี ไม่ต้องใช้ API Key) ---
 def get_osrm_route(df):
     try:
-        # นำพิกัดทั้งหมดมาเรียงต่อกันเป็น String
         coords = ";".join([f"{row['Lon']},{row['Lat']}" for _, row in df.iterrows()])
         url = f"http://router.project-osrm.org/route/v1/driving/{coords}?overview=full&geometries=geojson"
         
         response = requests.get(url).json()
         if response.get("code") == "Ok":
             route = response["routes"][0]
-            # สลับ [Lon, Lat] กลับมาเป็น [Lat, Lon] สำหรับ Folium
             geometry = [[coord[1], coord[0]] for coord in route["geometry"]["coordinates"]]
-            # ดึงระยะทางของแต่ละช่วงถนน (แปลงจากเมตรเป็นกิโลเมตร)
             leg_distances = [leg["distance"] / 1000.0 for leg in route["legs"]]
             return geometry, leg_distances
     except Exception as e:
@@ -64,7 +61,7 @@ def sweep_route(df):
     return [0] + [x[0] for x in angles]
 
 # ==========================================
-# เริ่มหน้าเว็บ
+# เริ่มหน้าเว็บ Streamlit
 # ==========================================
 st.set_page_config(page_title="Closed-Loop Milk Run Dashboard", layout="wide")
 st.title("🗺️ ระบบจัดการเส้นทาง Milk Run (กลับจุดเริ่มต้นอัตโนมัติ)")
@@ -92,23 +89,20 @@ if uploaded_file is not None:
                  "3. Sweep Heuristic (กวาดเป็นวงกลมรอบจุด -> กลับจุดเริ่ม)")
             )
 
-            # ทำการจัดลำดับและ "เพิ่มจุดกลับเริ่มต้นปิดท้าย" เพื่อทำ Closed-loop
             if "Nearest Neighbor" in algo_choice:
                 best_indices = nearest_neighbor_route(edited_df)
-                best_indices.append(0) # บังคับวนกลับมาจุดแรกสุด
+                best_indices.append(0) 
                 optimized_df = edited_df.iloc[best_indices].reset_index(drop=True)
                 st.success("✅ จัดเรียงเส้นทางใหม่ด้วย Nearest Neighbor (Closed-Loop) สำเร็จ!")
             elif "Sweep" in algo_choice:
                 best_indices = sweep_route(edited_df)
-                best_indices.append(0) # บังคับวนกลับมาจุดแรกสุด
+                best_indices.append(0) 
                 optimized_df = edited_df.iloc[best_indices].reset_index(drop=True)
                 st.success("✅ จัดเรียงเส้นทางใหม่ด้วย Sweep Heuristic (Closed-Loop) สำเร็จ!")
             else:
-                # กรณีใช้ลำดับเดิมในไฟล์ แต่ต้องดึงบรรทัดแรกมาแปะปิดท้ายขากลับ
                 optimized_df = pd.concat([edited_df, edited_df.iloc[[0]]], ignore_index=True)
                 st.info("ℹ️ ใช้ลำดับดั้งเดิมตามที่ระบุในไฟล์ (เพิ่มขากลับจุดเริ่มต้นให้แล้ว)")
 
-            # --- ดึงข้อมูลถนนจาก OSRM ---
             road_geometry, road_distances = get_osrm_route(optimized_df)
 
             col_weight = 'น้ำหนักที่ส่ง (กก.)'
@@ -134,16 +128,12 @@ if uploaded_file is not None:
                 with c_col3:
                     fuel_price = st.number_input("ราคาน้ำมัน (บาท/ลิตร)", value=32.50)
 
-            # จัดเตรียมข้อมูลน้ำหนัก
             if has_weight:
-                # จุดสุดท้ายที่กลับเข้าคลังจะไม่มีการลงน้ำหนักเพิ่ม (เป็น 0)
                 weight_list = pd.to_numeric(optimized_df[col_weight], errors='coerce').fillna(0).tolist()
-                # บรรทัดสุดท้ายที่เป็นขากลับคลัง ค่าน้ำหนักลงของต้องเป็น 0 เสมอ
                 weight_list[-1] = 0.0
             else:
                 weight_list = [0.0] * len(optimized_df)
             
-            # น้ำหนักรวมที่เริ่มบรรทุกออกจากจุดสตาร์ท
             current_weight = sum(weight_list)
 
             current_datetime = datetime.datetime.combine(datetime.date.today(), start_time)
@@ -156,7 +146,6 @@ if uploaded_file is not None:
                 row = optimized_df.iloc[i]
                 map_markers.append([row['Lat'], row['Lon']])
                 
-                # คำนวณความเร็วแปรผันตามน้ำหนัก
                 if max_capacity > 0:
                     weight_ratio = min(current_weight / max_capacity, 1.0)
                     current_speed = empty_speed - ((empty_speed - full_speed) * weight_ratio)
@@ -181,14 +170,12 @@ if uploaded_file is not None:
                 current_datetime += datetime.timedelta(minutes=travel_mins)
                 arrival_time = current_datetime.strftime("%H:%M:%S")
                 
-                # ถ้าเป็นจุดสุดท้าย (กลับถึงคลังแล้ว) ไม่ต้องบวกเวลากระจายของเพิ่ม
                 if i == len(optimized_df) - 1:
                     departure_time = "-"
                 else:
                     current_datetime += datetime.timedelta(minutes=service_time)
                     departure_time = current_datetime.strftime("%H:%M:%S")
                 
-                # กำหนดชื่อเรียกเพื่อไม่ให้สับสนในตารางเวลา
                 display_name = row['ชื่อสถานที่']
                 if i == len(optimized_df) - 1:
                     display_name = f"🔄 กลับสู่: {row['ชื่อสถานที่']}"
@@ -206,8 +193,6 @@ if uploaded_file is not None:
                 current_weight -= weight_list[i]
                 if current_weight < 0: current_weight = 0
 
-            # --- วิเคราะห์ผลลัพธ์ ---
-            # เวลาทั้งหมด = เวลาวิ่งรถ + เวลารอลงของ (ไม่รวมจุดสุดท้าย)
             total_time_mins = total_travel_mins + ((len(optimized_df) - 1) * service_time)
             
             st.markdown("---")
@@ -223,24 +208,22 @@ if uploaded_file is not None:
 
             st.dataframe(pd.DataFrame(schedule_data), use_container_width=True)
 
-            # --- แผนที่ ---
             st.markdown("---")
             st.subheader("📍 5. แผนที่เส้นทางเดินรถ Closed-Loop")
             
             m = folium.Map(location=[optimized_df['Lat'].mean(), optimized_df['Lon'].mean()], zoom_start=14)
 
-            # วาดเส้นทางถนน OSRM วนกลับจุดเริ่มต้น
             if road_geometry:
                 folium.PolyLine(road_geometry, color="blue", weight=5, opacity=0.8, tooltip="เส้นทางแบบ Closed-Loop").add_to(m)
             else:
                 folium.PolyLine(map_markers, color="red", weight=3, opacity=0.8, dash_array="5").add_to(m)
 
-            # ปักหมุด (จุดสุดท้ายที่เป็นขากลับคลัง ไม่จำเป็นต้องปักซ้ำเพื่อไม่ให้หมุดซ้อนกัน)
             for i in range(len(optimized_df) - 1):
                 row = optimized_df.iloc[i]
-                html = f"<b>ลำดับคิว {i}: {row['ชื่อสถานที่']}</b><br>เวลาถึง: {schedule_data[i]['เวลาไปถึง']}"
                 
-                # หากเป็นคิวที่ 0 ให้เด่นขึ้นมาหน่อยว่าเป็น Depot
+                # บั๊กเก่าได้รับการแก้ไขตรงบรรทัดนี้แล้ว (ใช้ 'เวลาไปถึง (ETA)')
+                html = f"<b>ลำดับคิว {i}: {row['ชื่อสถานที่']}</b><br>เวลาถึง: {schedule_data[i]['เวลาไปถึง (ETA)']}"
+                
                 color_bg = "#ff2200" if i == 0 else "#0078ff"
                 label_text = "คลัง" if i == 0 else str(i)
                 
