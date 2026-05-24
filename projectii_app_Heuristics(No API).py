@@ -6,7 +6,7 @@ import math
 import datetime
 import requests
 
-# --- ฟังก์ชันดึงเส้นทางถนนจริงจาก OSRM (ฟรี ไม่ต้องใช้ API Key) ---
+# --- ฟังก์ชันดึงเส้นทางถนนจริงจาก OSRM ---
 def get_osrm_route(df):
     try:
         coords = ";".join([f"{row['Lon']},{row['Lat']}" for _, row in df.iterrows()])
@@ -20,10 +20,9 @@ def get_osrm_route(df):
             return geometry, leg_distances
     except Exception as e:
         st.warning(f"ไม่สามารถเชื่อมต่อระบบถนน OSRM ได้ (กำลังสลับไปใช้ระยะทางเส้นตรงแทน) Error: {e}")
-    
     return None, None
 
-# --- ฟังก์ชันคำนวณระยะทางแบบเส้นตรง (สำรอง) ---
+# --- ฟังก์ชันคำนวณระยะทางแบบเส้นตรง ---
 def calculate_distance(lat1, lon1, lat2, lon2):
     R = 6371.0 
     lat1_rad, lon1_rad = math.radians(lat1), math.radians(lon1)
@@ -60,11 +59,110 @@ def sweep_route(df):
     angles.sort(key=lambda x: x[1])
     return [0] + [x[0] for x in angles]
 
+# --- อัลกอริทึม 3: Insertion Heuristic (Nearest Insertion) ---
+def nearest_insertion_route(df):
+    if len(df) <= 2:
+        return list(range(len(df)))
+    unvisited = list(range(1, len(df)))
+    route = [0]
+    
+    first_node = min(unvisited, key=lambda x: calculate_distance(
+        df.iloc[0]['Lat'], df.iloc[0]['Lon'], df.iloc[x]['Lat'], df.iloc[x]['Lon']))
+    route.append(first_node)
+    unvisited.remove(first_node)
+
+    while unvisited:
+        best_node = None
+        min_dist_to_route = float('inf')
+        for u in unvisited:
+            for r in route:
+                d = calculate_distance(df.iloc[u]['Lat'], df.iloc[u]['Lon'], df.iloc[r]['Lat'], df.iloc[r]['Lon'])
+                if d < min_dist_to_route:
+                    min_dist_to_route = d
+                    best_node = u
+
+        best_pos = 1
+        min_added_dist = float('inf')
+        for i in range(1, len(route) + 1):
+            prev_n = route[i-1]
+            next_n = route[i] if i < len(route) else route[0]
+            dist_added = (calculate_distance(df.iloc[prev_n]['Lat'], df.iloc[prev_n]['Lon'], df.iloc[best_node]['Lat'], df.iloc[best_node]['Lon']) +
+                          calculate_distance(df.iloc[best_node]['Lat'], df.iloc[best_node]['Lon'], df.iloc[next_n]['Lat'], df.iloc[next_n]['Lon']) -
+                          calculate_distance(df.iloc[prev_n]['Lat'], df.iloc[prev_n]['Lon'], df.iloc[next_n]['Lat'], df.iloc[next_n]['Lon']))
+            if dist_added < min_added_dist:
+                min_added_dist = dist_added
+                best_pos = i
+        route.insert(best_pos, best_node)
+        unvisited.remove(best_node)
+    return route
+
+# --- อัลกอริทึม 4: Saving Heuristic (Clarke-Wright for Single Route) ---
+def savings_route(df):
+    if len(df) <= 2:
+        return list(range(len(df)))
+    n = len(df)
+    savings = []
+    depot_lat, depot_lon = df.iloc[0]['Lat'], df.iloc[0]['Lon']
+    
+    for i in range(1, n):
+        for j in range(i + 1, n):
+            d0i = calculate_distance(depot_lat, depot_lon, df.iloc[i]['Lat'], df.iloc[i]['Lon'])
+            d0j = calculate_distance(depot_lat, depot_lon, df.iloc[j]['Lat'], df.iloc[j]['Lon'])
+            dij = calculate_distance(df.iloc[i]['Lat'], df.iloc[i]['Lon'], df.iloc[j]['Lat'], df.iloc[j]['Lon'])
+            s = d0i + d0j - dij
+            savings.append((s, i, j))
+            
+    savings.sort(key=lambda x: x[0], reverse=True)
+    routes = [[i] for i in range(1, n)]
+    
+    for s, i, j in savings:
+        r_i, r_j = None, None
+        for r in routes:
+            if i in r: r_i = r
+            if j in r: r_j = r
+        if r_i != r_j and r_i is not None and r_j is not None:
+            if r_i[-1] == i and r_j[0] == j:
+                routes.remove(r_i); routes.remove(r_j); routes.insert(0, r_i + r_j)
+            elif r_i[0] == i and r_j[-1] == j:
+                routes.remove(r_i); routes.remove(r_j); routes.insert(0, r_j + r_i)
+            elif r_i[0] == i and r_j[0] == j:
+                routes.remove(r_i); routes.remove(r_j); routes.insert(0, list(reversed(r_i)) + r_j)
+            elif r_i[-1] == i and r_j[-1] == j:
+                routes.remove(r_i); routes.remove(r_j); routes.insert(0, r_i + list(reversed(r_j)))
+                
+    final_nodes = []
+    for r in routes:
+        final_nodes.extend(r)
+    return [0] + final_nodes
+
+# --- อัลกอริทึม 5: 2-Opt Local Search ---
+def two_opt_route(df, initial_route):
+    route = initial_route.copy()
+    improvement = True
+    while improvement:
+        improvement = False
+        for i in range(1, len(route) - 2):
+            for j in range(i + 1, len(route)):
+                if j - i == 1: continue 
+                new_route = route[:]
+                new_route[i:j] = route[j-1:i-1:-1]
+                
+                def calc_total(r):
+                    d = 0
+                    for k in range(len(r)-1):
+                        d += calculate_distance(df.iloc[r[k]]['Lat'], df.iloc[r[k+1]]['Lat'], df.iloc[r[k]]['Lon'], df.iloc[r[k+1]]['Lon'])
+                    d += calculate_distance(df.iloc[r[-1]]['Lat'], df.iloc[r[0]]['Lat'], df.iloc[r[-1]]['Lon'], df.iloc[r[0]]['Lon'])
+                    return d
+                if calc_total(new_route) < calc_total(route):
+                    route = new_route
+                    improvement = True
+    return route
+
 # ==========================================
 # เริ่มหน้าเว็บ Streamlit
 # ==========================================
-st.set_page_config(page_title="Closed-Loop Milk Run Dashboard", layout="wide")
-st.title("🗺️ ระบบจัดการเส้นทาง Milk Run (กลับจุดเริ่มต้นอัตโนมัติ)")
+st.set_page_config(page_title="Milk Run Routing Optimization", layout="wide")
+st.title("🗺️ ระบบวิเคราะห์และเปรียบเทียบเส้นทาง Milk Run (Heuristic Optimization)")
 
 uploaded_file = st.file_uploader("📂 อัปโหลดไฟล์สถานที่ (Excel / CSV)", type=["xlsx", "csv"])
 
@@ -76,29 +174,49 @@ if uploaded_file is not None:
             df = pd.read_excel(uploaded_file)
             
         if 'ชื่อสถานที่' in df.columns and 'Lat' in df.columns and 'Lon' in df.columns:
-            
             st.subheader("📝 1. ข้อมูลสถานที่ต้นทางและลูกค้า")
             edited_df = st.data_editor(df, num_rows="dynamic", use_container_width=True)
 
             st.markdown("---")
             st.subheader("🧠 2. เลือกวิธีจัดเรียงเส้นทาง (Optimization)")
             algo_choice = st.radio(
-                "รูปแบบการจัดเส้นทาง (ทุกวิธีจะวิ่งกลับมาสิ้นสุดที่จุดแรกสุดเสมอ):",
+                "รูปแบบการจัดเส้นทาง (ทุกวิธีจะวิ่งลูปกลับมาคลังจุดเริ่มต้นอัตโนมัติ):",
                 ("1. ลำดับตามไฟล์ดั้งเดิม (บวกลูปกลับจุดเริ่มต้น)", 
-                 "2. Nearest Neighbor Heuristic (หาร้านที่ใกล้สุดไปเรื่อยๆ -> กลับจุดเริ่ม)", 
-                 "3. Sweep Heuristic (กวาดเป็นวงกลมรอบจุด -> กลับจุดเริ่ม)")
+                 "2. Nearest Neighbor Heuristic (หาร้านที่ใกล้ที่สุดไปเรื่อยๆ)", 
+                 "3. Sweep Heuristic (กวาดเป็นวงกลมเรเดียนรอบจุดเริ่มต้น)",
+                 "4. Insertion Heuristic (เลือกจุดแทรกที่เพิ่มระยะทางรวมน้อยที่สุด)",
+                 "5. Saving Heuristic (Clarke-Wright: คำนวณคู่จุดที่ประหยัดระยะทางได้มากที่สุด)",
+                 "6. Nearest Neighbor + 2-Opt Optimization (จัดเรียงจุดใกล้แล้วแก้เส้นทางไขว้กัน)")
             )
 
-            if "Nearest Neighbor" in algo_choice:
+            # เลือกประมวลผลตามคำสั่งอัลกอริทึม
+            is_optimized = False
+            if "Nearest Neighbor" in algo_choice and "2-Opt" not in algo_choice:
                 best_indices = nearest_neighbor_route(edited_df)
-                best_indices.append(0) 
-                optimized_df = edited_df.iloc[best_indices].reset_index(drop=True)
-                st.success("✅ จัดเรียงเส้นทางใหม่ด้วย Nearest Neighbor (Closed-Loop) สำเร็จ!")
+                best_indices.append(0); optimized_df = edited_df.iloc[best_indices].reset_index(drop=True)
+                st.success("✅ จัดเรียงด้วย Nearest Neighbor (Closed-Loop) สำเร็จ!")
+                is_optimized = True
             elif "Sweep" in algo_choice:
                 best_indices = sweep_route(edited_df)
-                best_indices.append(0) 
-                optimized_df = edited_df.iloc[best_indices].reset_index(drop=True)
-                st.success("✅ จัดเรียงเส้นทางใหม่ด้วย Sweep Heuristic (Closed-Loop) สำเร็จ!")
+                best_indices.append(0); optimized_df = edited_df.iloc[best_indices].reset_index(drop=True)
+                st.success("✅ จัดเรียงด้วย Sweep Heuristic (Closed-Loop) สำเร็จ!")
+                is_optimized = True
+            elif "Insertion" in algo_choice:
+                best_indices = nearest_insertion_route(edited_df)
+                best_indices.append(0); optimized_df = edited_df.iloc[best_indices].reset_index(drop=True)
+                st.success("✅ จัดเรียงด้วย Insertion Heuristic (Closed-Loop) สำเร็จ!")
+                is_optimized = True
+            elif "Saving Heuristic" in algo_choice:
+                best_indices = savings_route(edited_df)
+                best_indices.append(0); optimized_df = edited_df.iloc[best_indices].reset_index(drop=True)
+                st.success("✅ จัดเรียงด้วย Clarke-Wright Savings Heuristic (Closed-Loop) สำเร็จ!")
+                is_optimized = True
+            elif "2-Opt" in algo_choice:
+                nn_indices = nearest_neighbor_route(edited_df)
+                best_indices = two_opt_route(edited_df, nn_indices)
+                best_indices.append(0); optimized_df = edited_df.iloc[best_indices].reset_index(drop=True)
+                st.success("✅ จัดเรียงด้วย Nearest Neighbor + 2-Opt Optimization สำเร็จ!")
+                is_optimized = True
             else:
                 optimized_df = pd.concat([edited_df, edited_df.iloc[[0]]], ignore_index=True)
                 st.info("ℹ️ ใช้ลำดับดั้งเดิมตามที่ระบุในไฟล์ (เพิ่มขากลับจุดเริ่มต้นให้แล้ว)")
@@ -106,34 +224,28 @@ if uploaded_file is not None:
             road_geometry, road_distances = get_osrm_route(optimized_df)
 
             col_weight = 'น้ำหนักที่ส่ง (กก.)'
+            col_real_dist = 'ระยะห่างระหว่างแต่ละจุด (กม.)'
             has_weight = col_weight in optimized_df.columns
+            has_real_dist = col_real_dist in optimized_df.columns
 
             st.markdown("---")
             with st.expander("⚙️ 3. ตั้งค่าพารามิเตอร์รถขนส่ง", expanded=False):
                 t_col1, t_col2, t_col3, t_col4 = st.columns(4)
-                with t_col1:
-                    empty_speed = st.number_input("ความเร็วรถเปล่า (กม./ชม.)", value=60.0)
-                with t_col2:
-                    full_speed = st.number_input("ความเร็วบรรทุกเต็ม (กม./ชม.)", value=40.0)
-                with t_col3:
-                    max_capacity = st.number_input("ความจุรถ (กก.)", value=1000.0)
-                with t_col4:
-                    start_time = st.time_input("เวลาออกเดินทาง", datetime.time(8, 0))
+                with t_col1: empty_speed = st.number_input("ความเร็วรถเปล่า (กม./ชม.)", value=60.0)
+                with t_col2: full_speed = st.number_input("ความเร็วบรรทุกเต็ม (กม./ชม.)", value=40.0)
+                with t_col3: max_capacity = st.number_input("ความจุรถสูงสุด (กก.)", value=1000.0)
+                with t_col4: start_time = st.time_input("เวลาออกเดินทาง", datetime.time(8, 0))
                 
                 c_col1, c_col2, c_col3 = st.columns(3)
-                with c_col1:
-                    service_time = st.number_input("เวลาลงของ/จุด (นาที)", value=1)
-                with c_col2:
-                    fuel_rate = st.number_input("สิ้นเปลือง (กม./ลิตร)", value=10.0)
-                with c_col3:
-                    fuel_price = st.number_input("ราคาน้ำมัน (บาท/ลิตร)", value=32.50)
+                with c_col1: service_time = st.number_input("เวลาลงของ/จุด (นาที)", value=1)
+                with c_col2: fuel_rate = st.number_input("สิ้นเปลือง (กม./ลิตร)", value=10.0)
+                with c_col3: fuel_price = st.number_input("ราคาน้ำมัน (บาท/ลิตร)", value=32.50)
 
             if has_weight:
                 weight_list = pd.to_numeric(optimized_df[col_weight], errors='coerce').fillna(0).tolist()
                 weight_list[-1] = 0.0
             else:
                 weight_list = [0.0] * len(optimized_df)
-            
             current_weight = sum(weight_list)
 
             current_datetime = datetime.datetime.combine(datetime.date.today(), start_time)
@@ -149,15 +261,17 @@ if uploaded_file is not None:
                 if max_capacity > 0:
                     weight_ratio = min(current_weight / max_capacity, 1.0)
                     current_speed = empty_speed - ((empty_speed - full_speed) * weight_ratio)
-                else:
-                    current_speed = empty_speed
+                else: current_speed = empty_speed
                 current_speed = max(current_speed, 10.0)
                 
                 if i == 0:
                     dist = 0.0
                     travel_mins = 0
                 else:
-                    if road_distances:
+                    if not is_optimized and has_real_dist:
+                        try: dist = float(row[col_real_dist])
+                        except: dist = 0.0
+                    elif road_distances:
                         dist = road_distances[i-1] 
                     else:
                         dist = calculate_distance(optimized_df.iloc[i-1]['Lat'], optimized_df.iloc[i-1]['Lon'], row['Lat'], row['Lon'])
@@ -170,15 +284,13 @@ if uploaded_file is not None:
                 current_datetime += datetime.timedelta(minutes=travel_mins)
                 arrival_time = current_datetime.strftime("%H:%M:%S")
                 
-                if i == len(optimized_df) - 1:
-                    departure_time = "-"
+                if i == len(optimized_df) - 1: departure_time = "-"
                 else:
                     current_datetime += datetime.timedelta(minutes=service_time)
                     departure_time = current_datetime.strftime("%H:%M:%S")
                 
                 display_name = row['ชื่อสถานที่']
-                if i == len(optimized_df) - 1:
-                    display_name = f"🔄 กลับสู่: {row['ชื่อสถานที่']}"
+                if i == len(optimized_df) - 1: display_name = f"🔄 กลับสู่: {row['ชื่อสถานที่']}"
 
                 schedule_data.append({
                     "ลำดับคิว": i,
@@ -189,16 +301,15 @@ if uploaded_file is not None:
                     "เวลาไปถึง (ETA)": arrival_time,
                     "เวลาที่รถออกจากจุด": departure_time
                 })
-                
                 current_weight -= weight_list[i]
                 if current_weight < 0: current_weight = 0
 
             total_time_mins = total_travel_mins + ((len(optimized_df) - 1) * service_time)
             
             st.markdown("---")
-            st.subheader("📊 4. สรุปผลลัพธ์การเดินรถรวม (รวมขากลับคลังแล้ว)")
-            if road_distances:
-                st.success("✅ เส้นทางถนนจริงลากวนลูปกลับมาที่คลังสิ้นสุดโครงการเรียบร้อย")
+            st.subheader("📊 4. สรุปผลลัพธ์การเดินรถรวม")
+            if is_optimized and road_distances:
+                st.success("✅ ระยะทางคำนวณตามโครงข่ายถนนจริง (OSRM) จากลำดับเส้นทางใหม่")
 
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("ระยะทางรวมทั้งสิ้น", f"{total_distance:.2f} กม.")
@@ -210,7 +321,6 @@ if uploaded_file is not None:
 
             st.markdown("---")
             st.subheader("📍 5. แผนที่เส้นทางเดินรถ Closed-Loop")
-            
             m = folium.Map(location=[optimized_df['Lat'].mean(), optimized_df['Lon'].mean()], zoom_start=14)
 
             if road_geometry:
@@ -220,10 +330,7 @@ if uploaded_file is not None:
 
             for i in range(len(optimized_df) - 1):
                 row = optimized_df.iloc[i]
-                
-                # บั๊กเก่าได้รับการแก้ไขตรงบรรทัดนี้แล้ว (ใช้ 'เวลาไปถึง (ETA)')
                 html = f"<b>ลำดับคิว {i}: {row['ชื่อสถานที่']}</b><br>เวลาถึง: {schedule_data[i]['เวลาไปถึง (ETA)']}"
-                
                 color_bg = "#ff2200" if i == 0 else "#0078ff"
                 label_text = "คลัง" if i == 0 else str(i)
                 
@@ -231,9 +338,7 @@ if uploaded_file is not None:
                 folium.Marker(location=[row['Lat'], row['Lon']], popup=html, icon=icon).add_to(m)
 
             st_folium(m, width=1000, height=600)
-            
     except Exception as e:
         st.error(f"เกิดข้อผิดพลาดในการประมวลผล: {e}")
-
 else:
-    st.info("👆 อัปโหลดไฟล์สถานที่เพื่อดูการประมวลผลและเส้นทางแบบวนกลับจุดเริ่มต้น")
+    st.info("👆 อัปโหลดไฟล์สถานที่เพื่อเปรียบเทียบความประหยัดของแต่ละ Heuristics")
