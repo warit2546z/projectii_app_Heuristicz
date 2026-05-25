@@ -7,6 +7,40 @@ import datetime
 import requests
 import re
 
+# --- ฟังก์ชันสร้างไฟล์ KML ---
+def create_kml(df, geometry):
+    kml_header = '<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>\n<name>Milk Run Route</name>\n'
+    kml_footer = '</Document>\n</kml>'
+    kml_body = ""
+    
+    # สร้างหมุด (Placemarks)
+    for i in range(len(df) - 1): # จุดสุดท้ายคือคลังไม่ต้องปักซ้ำ
+        row = df.iloc[i]
+        kml_body += f"<Placemark><name>{i}: {row['ชื่อสถานที่']}</name><Point><coordinates>{row['Lon']},{row['Lat']},0</coordinates></Point></Placemark>\n"
+        
+    # สร้างเส้นทาง (LineString)
+    coords_str = " ".join([f"{lon},{lat},0" for lat, lon in geometry])
+    kml_body += f"<Placemark><name>Route Path</name><LineString><coordinates>{coords_str}</coordinates></LineString></Placemark>\n"
+    
+    return kml_header + kml_body + kml_footer
+
+# --- ฟังก์ชันสร้างไฟล์ GPX ---
+def create_gpx(df, geometry):
+    gpx = '<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="MilkRunApp">\n'
+    
+    # สร้าง Waypoints
+    for i in range(len(df) - 1):
+        row = df.iloc[i]
+        gpx += f'<wpt lat="{row["Lat"]}" lon="{row["Lon"]}"><name>{i}: {row["ชื่อสถานที่"]}</name></wpt>\n'
+        
+    # สร้าง Track (เส้นทาง)
+    gpx += '<trk><name>Milk Run Route Path</name><trkseg>\n'
+    for lat, lon in geometry:
+        gpx += f'<trkpt lat="{lat}" lon="{lon}"></trkpt>\n'
+    gpx += '</trkseg></trk>\n</gpx>'
+    
+    return gpx
+
 # --- ฟังก์ชันดึงราคาน้ำมันอัตโนมัติ (ปตท.) ---
 @st.cache_data(ttl=3600)
 def get_auto_fuel_prices():
@@ -70,7 +104,7 @@ def calculate_distance(lat1, lon1, lat2, lon2):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return R * c
 
-# --- Algorithms (Heuristics หลัก 4 ตัว) ---
+# --- Algorithms ---
 def nearest_neighbor_route(df):
     unvisited = list(range(1, len(df))); route = [0]; current = 0
     while unvisited:
@@ -128,11 +162,10 @@ def savings_route(df):
     for r in routes: final_nodes.extend(r)
     return [0] + final_nodes
 
-
 # ==========================================
 # หน้าเว็บ Streamlit
 # ==========================================
-st.set_page_config(page_title="Milk Run Optimization & Dashboard", layout="wide")
+st.set_page_config(page_title="Milk Run Optimization & VRPTW", layout="wide")
 st.title("🗺️ ระบบจัดเส้นทางและตรวจสอบกรอบเวลา (Milk Run Logistics)")
 
 uploaded_file = st.file_uploader("📂 อัปโหลดไฟล์สถานที่ (Excel / CSV)", type=["xlsx", "csv"])
@@ -145,7 +178,6 @@ if uploaded_file is not None:
         if 'ชื่อสถานที่' in df.columns and 'Lat' in df.columns and 'Lon' in df.columns:
             st.subheader("📝 1. ข้อมูลสถานที่ต้นทางและลูกค้า")
             
-            # ตรวจสอบและสร้างคอลัมน์กรอบเวลาถ้าไม่มี
             if 'เริ่มรับได้' not in df.columns: df['เริ่มรับได้'] = ""
             if 'ต้องส่งก่อน' not in df.columns: df['ต้องส่งก่อน'] = ""
                 
@@ -174,7 +206,7 @@ if uploaded_file is not None:
             st.markdown("---")
             st.subheader("🧠 3. เลือกวิธีจัดเรียงเส้นทาง")
             algo_choice = st.radio(
-                "รูปแบบการจัดเส้นทาง (ทุกวิธีจะวิ่งลูปกลับมาคลังจุดเริ่มต้นอัตโนมัติ และตรวจสอบกรอบเวลาให้เสมอ):",
+                "รูปแบบการจัดเส้นทาง (วิ่งลูปกลับมาคลังอัตโนมัติ และตรวจสอบกรอบเวลาเสมอ):",
                 ("1. ลำดับตามไฟล์ดั้งเดิม", 
                  "2. Nearest Neighbor Heuristic", 
                  "3. Sweep Heuristic",
@@ -232,7 +264,6 @@ if uploaded_file is not None:
                 total_travel_mins += travel_mins
                 current_datetime += datetime.timedelta(minutes=travel_mins)
                 
-                # --- ฝังการทำงาน Time Windows เช็คกรอบเวลาในทุก Algorithm ---
                 arrival_time = current_datetime.strftime("%H:%M:%S")
                 status = "✅ ปกติ"
                 wait_mins = 0
@@ -247,7 +278,7 @@ if uploaded_file is not None:
                     if current_datetime < open_dt:
                         wait_mins = (open_dt - current_datetime).total_seconds() / 60.0
                         total_wait_mins += wait_mins
-                        current_datetime = open_dt # บังคับให้รถจอดรอเวลา
+                        current_datetime = open_dt 
                         status = f"⏳ รอเริ่มรับ {int(wait_mins)} นาที"
                     elif current_datetime > close_dt:
                         status = "❌ ล่าช้า"
@@ -293,6 +324,9 @@ if uploaded_file is not None:
             st.subheader("📍 5. แผนที่เส้นทางเดินรถ Closed-Loop")
             m = folium.Map(location=[optimized_df['Lat'].mean(), optimized_df['Lon'].mean()], zoom_start=14)
 
+            # กำหนดเส้นทางที่จะใช้ Export (ถนนจริง หรือ เส้นตรง)
+            export_geometry = road_geometry if road_geometry else map_markers
+
             if road_geometry: folium.PolyLine(road_geometry, color="blue", weight=5, opacity=0.8).add_to(m)
             else: folium.PolyLine(map_markers, color="red", weight=3, opacity=0.8, dash_array="5").add_to(m)
 
@@ -305,6 +339,30 @@ if uploaded_file is not None:
                 folium.Marker(location=[row['Lat'], row['Lon']], popup=html, icon=icon).add_to(m)
 
             st_folium(m, width=1000, height=600)
+
+            # --- เพิ่มปุ่ม Download KML / GPX ---
+            st.markdown("---")
+            st.subheader("📥 6. ดาวน์โหลดเส้นทาง (Export Route)")
+            dl_col1, dl_col2 = st.columns(2)
+            
+            kml_data = create_kml(optimized_df, export_geometry)
+            gpx_data = create_gpx(optimized_df, export_geometry)
+            
+            with dl_col1:
+                st.download_button(
+                    label="🌍 ดาวน์โหลดไฟล์ KML (สำหรับ Google Earth / Google Maps)", 
+                    data=kml_data, 
+                    file_name="milk_run_route.kml", 
+                    mime="application/vnd.google-earth.kml+xml"
+                )
+            with dl_col2:
+                st.download_button(
+                    label="📡 ดาวน์โหลดไฟล์ GPX (สำหรับ GPS / Garmin)", 
+                    data=gpx_data, 
+                    file_name="milk_run_route.gpx", 
+                    mime="application/gpx+xml"
+                )
+
     except Exception as e:
         st.error(f"เกิดข้อผิดพลาดในการประมวลผล: {e}")
 else:
