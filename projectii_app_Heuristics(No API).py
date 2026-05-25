@@ -190,7 +190,9 @@ if uploaded_file is not None:
                 c_col1, c_col2, c_col3, c_col4, c_col5 = st.columns(5)
                 with c_col1: service_time = st.number_input("เวลาลงของ/จุด (นาที)", value=3)
                 with c_col2: fuel_rate = st.number_input("สิ้นเปลือง (กม./ลิตร)", value=10.0)
-                with c_col3: co2_rate = st.number_input("ปล่อย CO2 (kg/ลิตร)", value=2.68)
+                
+                # เปลี่ยนค่าเริ่มต้นเป็น 2.70757206 และตั้ง format ให้รองรับทศนิยมเยอะๆ
+                with c_col3: co2_rate = st.number_input("ปล่อย CO2 (kg/ลิตร)", value=2.70757206, format="%.8f")
                 
                 fuel_prices_dict = get_auto_fuel_prices()
                 fuel_options = list(fuel_prices_dict.keys())
@@ -244,7 +246,6 @@ if uploaded_file is not None:
                 row = optimized_df.iloc[i]
                 map_markers.append([row['Lat'], row['Lon']])
                 
-                # ใช้ความเร็วเฉลี่ยค่าเดียวตามที่ตั้งค่า
                 current_speed = avg_speed
                 
                 if i == 0:
@@ -299,6 +300,7 @@ if uploaded_file is not None:
                 })
                 current_weight = max(current_weight - weight_list[i], 0)
 
+            # คำนวณคาร์บอน (ระยะทาง / อัตราสิ้นเปลือง) * ค่า CO2 ที่กรอก
             total_co2 = (total_distance / fuel_rate if fuel_rate > 0 else 0) * co2_rate
             total_time_mins = total_travel_mins + total_wait_mins + ((len(optimized_df) - 1) * service_time)
             
