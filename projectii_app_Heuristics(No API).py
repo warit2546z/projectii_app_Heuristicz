@@ -29,17 +29,15 @@ def get_auto_fuel_prices():
     except Exception:
         return fallback_prices
 
-# --- ฟังก์ชันอ่านค่าเวลาจาก Excel อย่างปลอดภัย (รองรับ Time Object ของ Excel) ---
+# --- ฟังก์ชันอ่านค่าเวลาจาก Excel อย่างปลอดภัย ---
 def parse_time_val(time_val, default_time):
     if pd.isna(time_val) or time_val == "":
         return default_time
-    # กรณี Excel อ่านมาเป็นรูปแบบเวลาโดยตรง
     if isinstance(time_val, datetime.time):
         return time_val
     if isinstance(time_val, datetime.datetime):
         return time_val.time()
     
-    # กรณี Excel อ่านมาเป็นข้อความ
     time_str = str(time_val).strip()
     match = re.search(r'(\d{1,2}):(\d{2})', time_str)
     if match:
@@ -72,7 +70,7 @@ def calculate_distance(lat1, lon1, lat2, lon2):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return R * c
 
-# --- Algorithms ---
+# --- Algorithms (Heuristics หลัก 4 ตัว) ---
 def nearest_neighbor_route(df):
     unvisited = list(range(1, len(df))); route = [0]; current = 0
     while unvisited:
@@ -130,70 +128,12 @@ def savings_route(df):
     for r in routes: final_nodes.extend(r)
     return [0] + final_nodes
 
-def two_opt_route(df, initial_route):
-    route = initial_route.copy(); improvement = True
-    while improvement:
-        improvement = False
-        for i in range(1, len(route) - 2):
-            for j in range(i + 1, len(route)):
-                if j - i == 1: continue 
-                new_route = route[:]
-                new_route[i:j] = route[j-1:i-1:-1]
-                def calc_total(r):
-                    return sum(calculate_distance(df.iloc[r[k]]['Lat'], df.iloc[r[k]]['Lon'], df.iloc[r[k+1]]['Lat'], df.iloc[r[k+1]]['Lon']) for k in range(len(r)-1)) + calculate_distance(df.iloc[r[-1]]['Lat'], df.iloc[r[-1]]['Lon'], df.iloc[r[0]]['Lat'], df.iloc[r[0]]['Lon'])
-                if calc_total(new_route) < calc_total(route): route = new_route; improvement = True
-    return route
-
-# --- อัลกอริทึม 7: VRPTW (คำนึงถึงกรอบเวลา ป้องกันการส่งสาย) ---
-def vrptw_nearest_neighbor(df, start_time, avg_speed, service_time):
-    if len(df) <= 2: return list(range(len(df)))
-    unvisited = list(range(1, len(df))); route = [0]; current = 0
-    current_time = datetime.datetime.combine(datetime.date.today(), start_time)
-    
-    while unvisited:
-        best_node = None
-        best_score = float('inf')
-        
-        for x in unvisited:
-            dist = calculate_distance(df.iloc[current]['Lat'], df.iloc[current]['Lon'], df.iloc[x]['Lat'], df.iloc[x]['Lon'])
-            arrival_time = current_time + datetime.timedelta(minutes=(dist / avg_speed) * 60)
-            
-            open_time = parse_time_val(df.iloc[x].get('เริ่มรับได้', ''), datetime.time(0, 0))
-            close_time = parse_time_val(df.iloc[x].get('ต้องส่งก่อน', ''), datetime.time(23, 59))
-            
-            open_dt = datetime.datetime.combine(arrival_time.date(), open_time)
-            close_dt = datetime.datetime.combine(arrival_time.date(), close_time)
-            
-            wait_time = max(0, (open_dt - arrival_time).total_seconds() / 60)
-            late_time = max(0, (arrival_time - close_dt).total_seconds() / 60)
-            
-            # ยิ่งสาย ยิ่งโดนทำโทษคะแนนเยอะ ระบบจะบีบให้เลือกร้านใกล้หมดเวลาก่อน
-            score = dist + (wait_time * 0.5) + (late_time * 1000)
-            
-            if score < best_score:
-                best_score = score
-                best_node = x
-                
-        route.append(best_node)
-        current = best_node
-        unvisited.remove(best_node)
-        
-        dist = calculate_distance(df.iloc[route[-2]]['Lat'], df.iloc[route[-2]]['Lon'], df.iloc[best_node]['Lat'], df.iloc[best_node]['Lon'])
-        current_time += datetime.timedelta(minutes=(dist / avg_speed) * 60)
-        
-        open_time = parse_time_val(df.iloc[best_node].get('เริ่มรับได้', ''), datetime.time(0, 0))
-        open_dt = datetime.datetime.combine(current_time.date(), open_time)
-        if current_time < open_dt: current_time = open_dt # รอเวลา
-        current_time += datetime.timedelta(minutes=service_time) # หักเวลาลงของ
-        
-    return route
-
 
 # ==========================================
 # หน้าเว็บ Streamlit
 # ==========================================
-st.set_page_config(page_title="Milk Run Optimization & VRPTW", layout="wide")
-st.title("🗺️ ระบบจัดเส้นทางและกรอบเวลา (VRPTW & Fuel Auto)")
+st.set_page_config(page_title="Milk Run Optimization & Dashboard", layout="wide")
+st.title("🗺️ ระบบจัดเส้นทางและตรวจสอบกรอบเวลา (Milk Run Logistics)")
 
 uploaded_file = st.file_uploader("📂 อัปโหลดไฟล์สถานที่ (Excel / CSV)", type=["xlsx", "csv"])
 
@@ -205,13 +145,12 @@ if uploaded_file is not None:
         if 'ชื่อสถานที่' in df.columns and 'Lat' in df.columns and 'Lon' in df.columns:
             st.subheader("📝 1. ข้อมูลสถานที่ต้นทางและลูกค้า")
             
-            # ตรวจสอบว่ามีคอลัมน์เวลาหรือยัง ถ้าไม่มีให้สร้างขึ้นมาให้ผู้ใช้กรอก
+            # ตรวจสอบและสร้างคอลัมน์กรอบเวลาถ้าไม่มี
             if 'เริ่มรับได้' not in df.columns: df['เริ่มรับได้'] = ""
             if 'ต้องส่งก่อน' not in df.columns: df['ต้องส่งก่อน'] = ""
                 
             edited_df = st.data_editor(df, num_rows="dynamic", use_container_width=True)
 
-            # --- ย้ายเมนูตั้งค่าขึ้นมาก่อน Algorithm ---
             st.markdown("---")
             with st.expander("⚙️ 2. ตั้งค่าพารามิเตอร์รถขนส่งและสิ่งแวดล้อม", expanded=True):
                 t_col1, t_col2, t_col3, t_col4 = st.columns(4)
@@ -235,18 +174,16 @@ if uploaded_file is not None:
             st.markdown("---")
             st.subheader("🧠 3. เลือกวิธีจัดเรียงเส้นทาง")
             algo_choice = st.radio(
-                "รูปแบบการจัดเส้นทาง (ทุกวิธีจะวิ่งลูปกลับมาคลังจุดเริ่มต้นอัตโนมัติ):",
+                "รูปแบบการจัดเส้นทาง (ทุกวิธีจะวิ่งลูปกลับมาคลังจุดเริ่มต้นอัตโนมัติ และตรวจสอบกรอบเวลาให้เสมอ):",
                 ("1. ลำดับตามไฟล์ดั้งเดิม", 
                  "2. Nearest Neighbor Heuristic", 
                  "3. Sweep Heuristic",
                  "4. Insertion Heuristic", 
-                 "5. Saving Heuristic", 
-                 "6. Nearest Neighbor + 2-Opt Optimization",
-                 "7. VRPTW (จัดเส้นทางโดยคำนึงถึงกรอบเวลา เพื่อป้องกันการส่งสาย)")
+                 "5. Saving Heuristic")
             )
 
             is_optimized = False
-            if "Nearest Neighbor" in algo_choice and "2-Opt" not in algo_choice and "VRPTW" not in algo_choice:
+            if "Nearest Neighbor" in algo_choice:
                 best_indices = nearest_neighbor_route(edited_df); best_indices.append(0); optimized_df = edited_df.iloc[best_indices].reset_index(drop=True); is_optimized = True
             elif "Sweep" in algo_choice:
                 best_indices = sweep_route(edited_df); best_indices.append(0); optimized_df = edited_df.iloc[best_indices].reset_index(drop=True); is_optimized = True
@@ -254,10 +191,6 @@ if uploaded_file is not None:
                 best_indices = nearest_insertion_route(edited_df); best_indices.append(0); optimized_df = edited_df.iloc[best_indices].reset_index(drop=True); is_optimized = True
             elif "Saving" in algo_choice:
                 best_indices = savings_route(edited_df); best_indices.append(0); optimized_df = edited_df.iloc[best_indices].reset_index(drop=True); is_optimized = True
-            elif "2-Opt" in algo_choice:
-                nn_indices = nearest_neighbor_route(edited_df); best_indices = two_opt_route(edited_df, nn_indices); best_indices.append(0); optimized_df = edited_df.iloc[best_indices].reset_index(drop=True); is_optimized = True
-            elif "VRPTW" in algo_choice:
-                best_indices = vrptw_nearest_neighbor(edited_df, start_time, empty_speed, service_time); best_indices.append(0); optimized_df = edited_df.iloc[best_indices].reset_index(drop=True); is_optimized = True
             else:
                 optimized_df = pd.concat([edited_df, edited_df.iloc[[0]]], ignore_index=True)
 
@@ -299,7 +232,7 @@ if uploaded_file is not None:
                 total_travel_mins += travel_mins
                 current_datetime += datetime.timedelta(minutes=travel_mins)
                 
-                # --- จัดการเรื่องกรอบเวลา (ดึงจากไฟล์โดยตรง) ---
+                # --- ฝังการทำงาน Time Windows เช็คกรอบเวลาในทุก Algorithm ---
                 arrival_time = current_datetime.strftime("%H:%M:%S")
                 status = "✅ ปกติ"
                 wait_mins = 0
@@ -314,7 +247,7 @@ if uploaded_file is not None:
                     if current_datetime < open_dt:
                         wait_mins = (open_dt - current_datetime).total_seconds() / 60.0
                         total_wait_mins += wait_mins
-                        current_datetime = open_dt # บังคับเวลารอ
+                        current_datetime = open_dt # บังคับให้รถจอดรอเวลา
                         status = f"⏳ รอเริ่มรับ {int(wait_mins)} นาที"
                     elif current_datetime > close_dt:
                         status = "❌ ล่าช้า"
@@ -352,7 +285,7 @@ if uploaded_file is not None:
             m4.metric("เวลาจบงาน (ถึงจุดเริ่มต้น)", f"{int(total_time_mins//60)} ชม. {int(total_time_mins%60)} น.")
 
             if total_wait_mins > 0:
-                st.warning(f"⚠️ มีการเสียเวลาจอดรอร้านเปิดรับสินค้ารวมทั้งสิ้น {int(total_wait_mins)} นาที (โปรดตรวจสอบสถานะในตาราง)")
+                st.warning(f"⚠️ มีการเสียเวลาจอดรอร้านเริ่มรับสินค้ารวมทั้งสิ้น {int(total_wait_mins)} นาที (ตรวจสอบจุดที่ต้องรอในตารางด้านล่าง)")
 
             st.dataframe(pd.DataFrame(schedule_data), use_container_width=True)
 
@@ -375,4 +308,4 @@ if uploaded_file is not None:
     except Exception as e:
         st.error(f"เกิดข้อผิดพลาดในการประมวลผล: {e}")
 else:
-    st.info("👆 อัปโหลดไฟล์สถานที่เพื่อเริ่มต้นและเปรียบเทียบอัลกอริทึม")
+    st.info("👆 อัปโหลดไฟล์สถานที่เพื่อเริ่มต้นใช้งาน")
