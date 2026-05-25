@@ -29,10 +29,17 @@ def get_auto_fuel_prices():
     except Exception:
         return fallback_prices
 
-# --- ฟังก์ชันอ่านค่าเวลาจาก Excel อย่างปลอดภัย ---
-def parse_time_string(time_val, default_time):
-    if pd.isna(time_val) or str(time_val).strip() == "":
+# --- ฟังก์ชันอ่านค่าเวลาจาก Excel อย่างปลอดภัย (รองรับ Time Object ของ Excel) ---
+def parse_time_val(time_val, default_time):
+    if pd.isna(time_val) or time_val == "":
         return default_time
+    # กรณี Excel อ่านมาเป็นรูปแบบเวลาโดยตรง
+    if isinstance(time_val, datetime.time):
+        return time_val
+    if isinstance(time_val, datetime.datetime):
+        return time_val.time()
+    
+    # กรณี Excel อ่านมาเป็นข้อความ
     time_str = str(time_val).strip()
     match = re.search(r'(\d{1,2}):(\d{2})', time_str)
     if match:
@@ -137,6 +144,51 @@ def two_opt_route(df, initial_route):
                 if calc_total(new_route) < calc_total(route): route = new_route; improvement = True
     return route
 
+# --- อัลกอริทึม 7: VRPTW (คำนึงถึงกรอบเวลา ป้องกันการส่งสาย) ---
+def vrptw_nearest_neighbor(df, start_time, avg_speed, service_time):
+    if len(df) <= 2: return list(range(len(df)))
+    unvisited = list(range(1, len(df))); route = [0]; current = 0
+    current_time = datetime.datetime.combine(datetime.date.today(), start_time)
+    
+    while unvisited:
+        best_node = None
+        best_score = float('inf')
+        
+        for x in unvisited:
+            dist = calculate_distance(df.iloc[current]['Lat'], df.iloc[current]['Lon'], df.iloc[x]['Lat'], df.iloc[x]['Lon'])
+            arrival_time = current_time + datetime.timedelta(minutes=(dist / avg_speed) * 60)
+            
+            open_time = parse_time_val(df.iloc[x].get('เริ่มรับได้', ''), datetime.time(0, 0))
+            close_time = parse_time_val(df.iloc[x].get('ต้องส่งก่อน', ''), datetime.time(23, 59))
+            
+            open_dt = datetime.datetime.combine(arrival_time.date(), open_time)
+            close_dt = datetime.datetime.combine(arrival_time.date(), close_time)
+            
+            wait_time = max(0, (open_dt - arrival_time).total_seconds() / 60)
+            late_time = max(0, (arrival_time - close_dt).total_seconds() / 60)
+            
+            # ยิ่งสาย ยิ่งโดนทำโทษคะแนนเยอะ ระบบจะบีบให้เลือกร้านใกล้หมดเวลาก่อน
+            score = dist + (wait_time * 0.5) + (late_time * 1000)
+            
+            if score < best_score:
+                best_score = score
+                best_node = x
+                
+        route.append(best_node)
+        current = best_node
+        unvisited.remove(best_node)
+        
+        dist = calculate_distance(df.iloc[route[-2]]['Lat'], df.iloc[route[-2]]['Lon'], df.iloc[best_node]['Lat'], df.iloc[best_node]['Lon'])
+        current_time += datetime.timedelta(minutes=(dist / avg_speed) * 60)
+        
+        open_time = parse_time_val(df.iloc[best_node].get('เริ่มรับได้', ''), datetime.time(0, 0))
+        open_dt = datetime.datetime.combine(current_time.date(), open_time)
+        if current_time < open_dt: current_time = open_dt # รอเวลา
+        current_time += datetime.timedelta(minutes=service_time) # หักเวลาลงของ
+        
+    return route
+
+
 # ==========================================
 # หน้าเว็บ Streamlit
 # ==========================================
@@ -153,43 +205,15 @@ if uploaded_file is not None:
         if 'ชื่อสถานที่' in df.columns and 'Lat' in df.columns and 'Lon' in df.columns:
             st.subheader("📝 1. ข้อมูลสถานที่ต้นทางและลูกค้า")
             
-            # --- ตรวจสอบและสร้างคอลัมน์กรอบเวลาถ้าไม่มี ---
-            if 'เวลาเปิด' not in df.columns: df['เวลาเปิด'] = ""
-            if 'เวลาปิด' not in df.columns: df['เวลาปิด'] = ""
+            # ตรวจสอบว่ามีคอลัมน์เวลาหรือยัง ถ้าไม่มีให้สร้างขึ้นมาให้ผู้ใช้กรอก
+            if 'เริ่มรับได้' not in df.columns: df['เริ่มรับได้'] = ""
+            if 'ต้องส่งก่อน' not in df.columns: df['ต้องส่งก่อน'] = ""
                 
             edited_df = st.data_editor(df, num_rows="dynamic", use_container_width=True)
 
+            # --- ย้ายเมนูตั้งค่าขึ้นมาก่อน Algorithm ---
             st.markdown("---")
-            st.subheader("🧠 2. เลือกวิธีจัดเรียงเส้นทาง")
-            algo_choice = st.radio(
-                "รูปแบบการจัดเส้นทาง (ทุกวิธีจะวิ่งลูปกลับมาคลังจุดเริ่มต้นอัตโนมัติ):",
-                ("1. ลำดับตามไฟล์ดั้งเดิม", "2. Nearest Neighbor Heuristic", "3. Sweep Heuristic",
-                 "4. Insertion Heuristic", "5. Saving Heuristic", "6. Nearest Neighbor + 2-Opt Optimization")
-            )
-
-            is_optimized = False
-            if "Nearest Neighbor" in algo_choice and "2-Opt" not in algo_choice:
-                best_indices = nearest_neighbor_route(edited_df); best_indices.append(0); optimized_df = edited_df.iloc[best_indices].reset_index(drop=True); is_optimized = True
-            elif "Sweep" in algo_choice:
-                best_indices = sweep_route(edited_df); best_indices.append(0); optimized_df = edited_df.iloc[best_indices].reset_index(drop=True); is_optimized = True
-            elif "Insertion" in algo_choice:
-                best_indices = nearest_insertion_route(edited_df); best_indices.append(0); optimized_df = edited_df.iloc[best_indices].reset_index(drop=True); is_optimized = True
-            elif "Saving" in algo_choice:
-                best_indices = savings_route(edited_df); best_indices.append(0); optimized_df = edited_df.iloc[best_indices].reset_index(drop=True); is_optimized = True
-            elif "2-Opt" in algo_choice:
-                nn_indices = nearest_neighbor_route(edited_df); best_indices = two_opt_route(edited_df, nn_indices); best_indices.append(0); optimized_df = edited_df.iloc[best_indices].reset_index(drop=True); is_optimized = True
-            else:
-                optimized_df = pd.concat([edited_df, edited_df.iloc[[0]]], ignore_index=True)
-
-            road_geometry, road_distances = get_osrm_route(optimized_df)
-
-            col_weight = 'น้ำหนักที่ส่ง (กก.)'
-            col_real_dist = 'ระยะห่างระหว่างแต่ละจุด (กม.)'
-            has_weight = col_weight in optimized_df.columns
-            has_real_dist = col_real_dist in optimized_df.columns
-
-            st.markdown("---")
-            with st.expander("⚙️ 3. ตั้งค่าพารามิเตอร์รถขนส่งและสิ่งแวดล้อม", expanded=True):
+            with st.expander("⚙️ 2. ตั้งค่าพารามิเตอร์รถขนส่งและสิ่งแวดล้อม", expanded=True):
                 t_col1, t_col2, t_col3, t_col4 = st.columns(4)
                 with t_col1: empty_speed = st.number_input("ความเร็วรถเปล่า (กม./ชม.)", value=60.0)
                 with t_col2: full_speed = st.number_input("ความเร็วบรรทุกเต็ม (กม./ชม.)", value=40.0)
@@ -207,6 +231,42 @@ if uploaded_file is not None:
                 
                 with c_col4: selected_fuel = st.selectbox("ชนิดน้ำมัน", fuel_options, index=default_index)
                 with c_col5: fuel_price = st.number_input(f"ราคา (บาท/ลิตร)", value=float(fuel_prices_dict.get(selected_fuel, 32.50)))
+
+            st.markdown("---")
+            st.subheader("🧠 3. เลือกวิธีจัดเรียงเส้นทาง")
+            algo_choice = st.radio(
+                "รูปแบบการจัดเส้นทาง (ทุกวิธีจะวิ่งลูปกลับมาคลังจุดเริ่มต้นอัตโนมัติ):",
+                ("1. ลำดับตามไฟล์ดั้งเดิม", 
+                 "2. Nearest Neighbor Heuristic", 
+                 "3. Sweep Heuristic",
+                 "4. Insertion Heuristic", 
+                 "5. Saving Heuristic", 
+                 "6. Nearest Neighbor + 2-Opt Optimization",
+                 "7. VRPTW (จัดเส้นทางโดยคำนึงถึงกรอบเวลา เพื่อป้องกันการส่งสาย)")
+            )
+
+            is_optimized = False
+            if "Nearest Neighbor" in algo_choice and "2-Opt" not in algo_choice and "VRPTW" not in algo_choice:
+                best_indices = nearest_neighbor_route(edited_df); best_indices.append(0); optimized_df = edited_df.iloc[best_indices].reset_index(drop=True); is_optimized = True
+            elif "Sweep" in algo_choice:
+                best_indices = sweep_route(edited_df); best_indices.append(0); optimized_df = edited_df.iloc[best_indices].reset_index(drop=True); is_optimized = True
+            elif "Insertion" in algo_choice:
+                best_indices = nearest_insertion_route(edited_df); best_indices.append(0); optimized_df = edited_df.iloc[best_indices].reset_index(drop=True); is_optimized = True
+            elif "Saving" in algo_choice:
+                best_indices = savings_route(edited_df); best_indices.append(0); optimized_df = edited_df.iloc[best_indices].reset_index(drop=True); is_optimized = True
+            elif "2-Opt" in algo_choice:
+                nn_indices = nearest_neighbor_route(edited_df); best_indices = two_opt_route(edited_df, nn_indices); best_indices.append(0); optimized_df = edited_df.iloc[best_indices].reset_index(drop=True); is_optimized = True
+            elif "VRPTW" in algo_choice:
+                best_indices = vrptw_nearest_neighbor(edited_df, start_time, empty_speed, service_time); best_indices.append(0); optimized_df = edited_df.iloc[best_indices].reset_index(drop=True); is_optimized = True
+            else:
+                optimized_df = pd.concat([edited_df, edited_df.iloc[[0]]], ignore_index=True)
+
+            road_geometry, road_distances = get_osrm_route(optimized_df)
+
+            col_weight = 'น้ำหนักที่ส่ง (กก.)'
+            col_real_dist = 'ระยะห่างระหว่างแต่ละจุด (กม.)'
+            has_weight = col_weight in optimized_df.columns
+            has_real_dist = col_real_dist in optimized_df.columns
 
             weight_list = pd.to_numeric(optimized_df[col_weight], errors='coerce').fillna(0).tolist() if has_weight else [0.0] * len(optimized_df)
             weight_list[-1] = 0.0
@@ -239,14 +299,14 @@ if uploaded_file is not None:
                 total_travel_mins += travel_mins
                 current_datetime += datetime.timedelta(minutes=travel_mins)
                 
-                # --- จัดการเรื่องกรอบเวลา (Time Windows) ---
+                # --- จัดการเรื่องกรอบเวลา (ดึงจากไฟล์โดยตรง) ---
                 arrival_time = current_datetime.strftime("%H:%M:%S")
                 status = "✅ ปกติ"
                 wait_mins = 0
                 
-                if i > 0 and i < len(optimized_df) - 1: # ไม่เช็คกรอบเวลากับจุดเริ่มต้นตอนออกและตอนกลับ
-                    open_time = parse_time_string(row.get('เวลาเปิด', ''), datetime.time(0, 0))
-                    close_time = parse_time_string(row.get('เวลาปิด', ''), datetime.time(23, 59))
+                if i > 0 and i < len(optimized_df) - 1:
+                    open_time = parse_time_val(row.get('เริ่มรับได้', ''), datetime.time(0, 0))
+                    close_time = parse_time_val(row.get('ต้องส่งก่อน', ''), datetime.time(23, 59))
                     
                     open_dt = datetime.datetime.combine(current_datetime.date(), open_time)
                     close_dt = datetime.datetime.combine(current_datetime.date(), close_time)
@@ -254,8 +314,8 @@ if uploaded_file is not None:
                     if current_datetime < open_dt:
                         wait_mins = (open_dt - current_datetime).total_seconds() / 60.0
                         total_wait_mins += wait_mins
-                        current_datetime = open_dt # บังคับให้เวลารอจนกว่าร้านจะเปิด
-                        status = f"⏳ รอเปิด {int(wait_mins)} นาที"
+                        current_datetime = open_dt # บังคับเวลารอ
+                        status = f"⏳ รอเริ่มรับ {int(wait_mins)} นาที"
                     elif current_datetime > close_dt:
                         status = "❌ ล่าช้า"
                 
@@ -291,9 +351,8 @@ if uploaded_file is not None:
             m3.metric("คาร์บอนฟุตพริ้นท์ (CO2e)", f"{total_co2:.2f} kg")
             m4.metric("เวลาจบงาน (ถึงจุดเริ่มต้น)", f"{int(total_time_mins//60)} ชม. {int(total_time_mins%60)} น.")
 
-            # แจ้งเตือนถ้ารถมีเวลารอ
             if total_wait_mins > 0:
-                st.warning(f"⚠️ มีการเสียเวลาจอดรอร้านเปิดรวมทั้งสิ้น {int(total_wait_mins)} นาที (โปรดตรวจสอบสถานะในตาราง)")
+                st.warning(f"⚠️ มีการเสียเวลาจอดรอร้านเปิดรับสินค้ารวมทั้งสิ้น {int(total_wait_mins)} นาที (โปรดตรวจสอบสถานะในตาราง)")
 
             st.dataframe(pd.DataFrame(schedule_data), use_container_width=True)
 
@@ -307,7 +366,7 @@ if uploaded_file is not None:
             for i in range(len(optimized_df) - 1):
                 row = optimized_df.iloc[i]
                 html = f"<b>ลำดับคิว {i}: {row['ชื่อสถานที่']}</b><br>เวลาถึง: {schedule_data[i]['ถึง (ETA)']}<br>สถานะ: {schedule_data[i]['สถานะ']}"
-                color_bg = "#ff2200" if i == 0 else ("#ff9900" if "รอเปิด" in schedule_data[i]['สถานะ'] else ("#cc0000" if "ล่าช้า" in schedule_data[i]['สถานะ'] else "#0078ff"))
+                color_bg = "#ff2200" if i == 0 else ("#ff9900" if "รอเริ่มรับ" in schedule_data[i]['สถานะ'] else ("#cc0000" if "ล่าช้า" in schedule_data[i]['สถานะ'] else "#0078ff"))
                 label_text = "คลัง" if i == 0 else str(i)
                 icon = folium.DivIcon(html=f"""<div style="background-color:{color_bg}; color:white; border-radius:50%; width:32px; height:32px; display:flex; justify-content:center; align-items:center; font-weight:bold; border:2px solid white; box-shadow: 0 0 4px rgba(0,0,0,0.5);">{label_text}</div>""", icon_anchor=(16, 16))
                 folium.Marker(location=[row['Lat'], row['Lon']], popup=html, icon=icon).add_to(m)
