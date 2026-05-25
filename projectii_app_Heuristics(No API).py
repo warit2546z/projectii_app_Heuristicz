@@ -13,12 +13,10 @@ def create_kml(df, geometry):
     kml_footer = '</Document>\n</kml>'
     kml_body = ""
     
-    # สร้างหมุด (Placemarks)
-    for i in range(len(df) - 1): # จุดสุดท้ายคือคลังไม่ต้องปักซ้ำ
+    for i in range(len(df) - 1):
         row = df.iloc[i]
         kml_body += f"<Placemark><name>{i}: {row['ชื่อสถานที่']}</name><Point><coordinates>{row['Lon']},{row['Lat']},0</coordinates></Point></Placemark>\n"
         
-    # สร้างเส้นทาง (LineString)
     coords_str = " ".join([f"{lon},{lat},0" for lat, lon in geometry])
     kml_body += f"<Placemark><name>Route Path</name><LineString><coordinates>{coords_str}</coordinates></LineString></Placemark>\n"
     
@@ -28,12 +26,10 @@ def create_kml(df, geometry):
 def create_gpx(df, geometry):
     gpx = '<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="MilkRunApp">\n'
     
-    # สร้าง Waypoints
     for i in range(len(df) - 1):
         row = df.iloc[i]
         gpx += f'<wpt lat="{row["Lat"]}" lon="{row["Lon"]}"><name>{i}: {row["ชื่อสถานที่"]}</name></wpt>\n'
         
-    # สร้าง Track (เส้นทาง)
     gpx += '<trk><name>Milk Run Route Path</name><trkseg>\n'
     for lat, lon in geometry:
         gpx += f'<trkpt lat="{lat}" lon="{lon}"></trkpt>\n'
@@ -165,7 +161,7 @@ def savings_route(df):
 # ==========================================
 # หน้าเว็บ Streamlit
 # ==========================================
-st.set_page_config(page_title="Milk Run Optimization & VRPTW", layout="wide")
+st.set_page_config(page_title="Milk Run Optimization & Dashboard", layout="wide")
 st.title("🗺️ ระบบจัดเส้นทางและตรวจสอบกรอบเวลา (Milk Run Logistics)")
 
 uploaded_file = st.file_uploader("📂 อัปโหลดไฟล์สถานที่ (Excel / CSV)", type=["xlsx", "csv"])
@@ -185,12 +181,12 @@ if uploaded_file is not None:
 
             st.markdown("---")
             with st.expander("⚙️ 2. ตั้งค่าพารามิเตอร์รถขนส่งและสิ่งแวดล้อม", expanded=True):
-                t_col1, t_col2, t_col3, t_col4 = st.columns(4)
-                with t_col1: empty_speed = st.number_input("ความเร็วรถเปล่า (กม./ชม.)", value=60.0)
-                with t_col2: full_speed = st.number_input("ความเร็วบรรทุกเต็ม (กม./ชม.)", value=40.0)
-                with t_col3: max_capacity = st.number_input("ความจุรถสูงสุด (กก.)", value=1000.0)
-                with t_col4: start_time = st.time_input("เวลาออกเดินทาง", datetime.time(11, 0))
+                # --- แถวที่ 1: ความเร็วและเวลาออกเดินทาง ---
+                t_col1, t_col2 = st.columns(2)
+                with t_col1: avg_speed = st.number_input("ความเร็วเฉลี่ย (กม./ชม.)", value=40.0)
+                with t_col2: start_time = st.time_input("เวลาออกเดินทาง", datetime.time(11, 0))
                 
+                # --- แถวที่ 2: ค่าใช้จ่ายและสิ่งแวดล้อม ---
                 c_col1, c_col2, c_col3, c_col4, c_col5 = st.columns(5)
                 with c_col1: service_time = st.number_input("เวลาลงของ/จุด (นาที)", value=3)
                 with c_col2: fuel_rate = st.number_input("สิ้นเปลือง (กม./ลิตร)", value=10.0)
@@ -206,7 +202,7 @@ if uploaded_file is not None:
             st.markdown("---")
             st.subheader("🧠 3. เลือกวิธีจัดเรียงเส้นทาง")
             algo_choice = st.radio(
-                "รูปแบบการจัดเส้นทาง (วิ่งลูปกลับมาคลังอัตโนมัติ และตรวจสอบกรอบเวลาเสมอ):",
+                "รูปแบบการจัดเส้นทาง (ทุกวิธีจะวิ่งลูปกลับมาคลังจุดเริ่มต้นอัตโนมัติ และตรวจสอบกรอบเวลาให้เสมอ):",
                 ("1. ลำดับตามไฟล์ดั้งเดิม", 
                  "2. Nearest Neighbor Heuristic", 
                  "3. Sweep Heuristic",
@@ -248,7 +244,8 @@ if uploaded_file is not None:
                 row = optimized_df.iloc[i]
                 map_markers.append([row['Lat'], row['Lon']])
                 
-                current_speed = max(empty_speed - ((empty_speed - full_speed) * min(current_weight / max_capacity, 1.0)) if max_capacity > 0 else empty_speed, 10.0)
+                # ใช้ความเร็วเฉลี่ยค่าเดียวตามที่ตั้งค่า
+                current_speed = avg_speed
                 
                 if i == 0:
                     dist = 0.0; travel_mins = 0
@@ -324,7 +321,6 @@ if uploaded_file is not None:
             st.subheader("📍 5. แผนที่เส้นทางเดินรถ Closed-Loop")
             m = folium.Map(location=[optimized_df['Lat'].mean(), optimized_df['Lon'].mean()], zoom_start=14)
 
-            # กำหนดเส้นทางที่จะใช้ Export (ถนนจริง หรือ เส้นตรง)
             export_geometry = road_geometry if road_geometry else map_markers
 
             if road_geometry: folium.PolyLine(road_geometry, color="blue", weight=5, opacity=0.8).add_to(m)
@@ -340,7 +336,6 @@ if uploaded_file is not None:
 
             st_folium(m, width=1000, height=600)
 
-            # --- เพิ่มปุ่ม Download KML / GPX ---
             st.markdown("---")
             st.subheader("📥 6. ดาวน์โหลดเส้นทาง (Export Route)")
             dl_col1, dl_col2 = st.columns(2)
