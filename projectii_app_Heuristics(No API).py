@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import folium
+from folium.plugins import AntPath  # เพิ่มการเรียกใช้ AntPath
 from streamlit_folium import st_folium
 import math
 import datetime
@@ -169,7 +170,6 @@ if uploaded_file is not None:
 
             st.markdown("---")
             with st.expander("⚙️ 2. ตั้งค่าพารามิเตอร์รถขนส่งและสิ่งแวดล้อม", expanded=True):
-                # ฝังค่าน้ำหนักสุทธิและบรรจุภัณฑ์
                 w_m200_net, w_m200_pkg = 0.200, 0.015
                 w_m2l_net, w_m2l_pkg = 2.000, 0.070
                 w_m5l_net, w_m5l_pkg = 5.000, 0.140
@@ -239,7 +239,7 @@ if uploaded_file is not None:
                 weight_list = [0.0] * len(optimized_df)
 
             weight_list[-1] = 0.0 
-            total_initial_weight = sum(weight_list) # นำไปทำหลอดพลังงาน
+            total_initial_weight = sum(weight_list)
             current_weight = total_initial_weight
 
             current_datetime = datetime.datetime.combine(datetime.date.today(), start_time)
@@ -318,7 +318,6 @@ if uploaded_file is not None:
             st.markdown("---\n")
             st.subheader("📊 4. สรุปผลลัพธ์การเดินรถรวม")
             
-            # --- สร้างหลอดพลังงานน้ำหนักความจุรถ ---
             st.markdown("##### ⚖️ สถานะความจุพิกัดรถ (Capacity Progress)")
             capacity_percent = min((total_initial_weight / max_capacity) * 100, 100) if max_capacity > 0 else 0
             
@@ -332,7 +331,7 @@ if uploaded_file is not None:
                 st.success(f"🟢 สถานะปกติ: น้ำหนักบรรทุกรวม {total_initial_weight:.2f} กก. จาก {max_capacity} กก. ({capacity_percent:.1f}%)")
                 st.progress(capacity_percent / 100.0)
 
-            st.write("") # เว้นบรรทัด
+            st.write("") 
             
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("ระยะทางรวมทั้งสิ้น", f"{total_distance:.2f} กม.")
@@ -350,8 +349,11 @@ if uploaded_file is not None:
             m = folium.Map(location=[optimized_df['Lat'].mean(), optimized_df['Lon'].mean()], zoom_start=14)
             export_geometry = road_geometry if road_geometry else map_markers
 
-            if road_geometry: folium.PolyLine(road_geometry, color="blue", weight=5, opacity=0.8).add_to(m)
-            else: folium.PolyLine(map_markers, color="red", weight=3, opacity=0.8, dash_array="5").add_to(m)
+            # --- แก้ไขจาก PolyLine เป็น AntPath เพื่อแสดงแอนิเมชันทิศทาง ---
+            if road_geometry: 
+                AntPath(road_geometry, color="blue", pulse_color="white", weight=5, delay=800).add_to(m)
+            else: 
+                AntPath(map_markers, color="red", pulse_color="yellow", weight=4, delay=800).add_to(m)
 
             for i in range(len(optimized_df) - 1):
                 row = optimized_df.iloc[i]
