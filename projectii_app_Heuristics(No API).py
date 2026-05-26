@@ -97,12 +97,58 @@ def nearest_neighbor_route(df):
         route.append(next_node); current = next_node; unvisited.remove(next_node)
     return route
 
-def sweep_route(df):
-    depot_lat, depot_lon = df.iloc[0]['Lat'], df.iloc[0]['Lon']; angles = []
-    for i in range(1, len(df)):
-        angles.append((i, math.atan2(df.iloc[i]['Lat'] - depot_lat, df.iloc[i]['Lon'] - depot_lon)))
-    angles.sort(key=lambda x: x[1])
-    return [0] + [x[0] for x in angles]
+# --- Kruskal's MST Heuristic (แทนที่ Sweep) ---
+def kruskal_route(df):
+    n = len(df)
+    if n <= 1: return list(range(n))
+    
+    # 1. สร้าง Edges ทั้งหมด
+    edges = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            dist = calculate_distance(df.iloc[i]['Lat'], df.iloc[i]['Lon'], df.iloc[j]['Lat'], df.iloc[j]['Lon'])
+            edges.append((dist, i, j))
+    
+    # เรียงลำดับ Edge จากสั้นไปยาว
+    edges.sort(key=lambda x: x[0])
+    
+    # 2. Disjoint Set (Union-Find) สำหรับ Kruskal
+    parent = list(range(n))
+    def find(i):
+        if parent[i] == i: return i
+        parent[i] = find(parent[i]) # Path compression
+        return parent[i]
+    
+    def union(i, j):
+        root_i = find(i)
+        root_j = find(j)
+        if root_i != root_j:
+            parent[root_i] = root_j
+            
+    # 3. สร้าง Minimum Spanning Tree (MST)
+    mst = {i: [] for i in range(n)}
+    for dist, i, j in edges:
+        if find(i) != find(j):
+            union(i, j)
+            mst[i].append(j)
+            mst[j].append(i)
+            
+    # 4. เดินตามเส้นทางต้นไม้ (DFS Pre-order Traversal) เพื่อแปลงเป็นลูป
+    visited = [False] * n
+    route = []
+    stack = [0] # เริ่มที่คลังสินค้า
+    
+    while stack:
+        node = stack.pop()
+        if not visited[node]:
+            visited[node] = True
+            route.append(node)
+            # เพิ่มเพื่อนบ้านลงใน Stack
+            for neighbor in reversed(mst[node]):
+                if not visited[neighbor]:
+                    stack.append(neighbor)
+                    
+    return route
 
 def nearest_insertion_route(df):
     if len(df) <= 2: return list(range(len(df)))
@@ -198,14 +244,14 @@ if uploaded_file is not None:
             st.subheader("🧠 3. เลือกวิธีจัดเรียงเส้นทาง")
             algo_choice = st.radio(
                 "รูปแบบการจัดเส้นทาง (ทุกวิธีจะวิ่งลูปกลับมาคลังจุดเริ่มต้นอัตโนมัติ และคำนวณกรอบเวลาความเร็วผกผัน):",
-                ("1. ลำดับตามไฟล์ดั้งเดิม", "2. Nearest Neighbor Heuristic", "3. Sweep Heuristic", "4. Insertion Heuristic", "5. Saving Heuristic")
+                ("1. ลำดับตามไฟล์ดั้งเดิม", "2. Nearest Neighbor Heuristic", "3. Kruskal's Heuristic", "4. Insertion Heuristic", "5. Saving Heuristic")
             )
 
             is_optimized = False
             if "Nearest Neighbor" in algo_choice:
                 best_indices = nearest_neighbor_route(edited_df); best_indices.append(0); optimized_df = edited_df.iloc[best_indices].reset_index(drop=True); is_optimized = True
-            elif "Sweep" in algo_choice:
-                best_indices = sweep_route(edited_df); best_indices.append(0); optimized_df = edited_df.iloc[best_indices].reset_index(drop=True); is_optimized = True
+            elif "Kruskal's" in algo_choice:
+                best_indices = kruskal_route(edited_df); best_indices.append(0); optimized_df = edited_df.iloc[best_indices].reset_index(drop=True); is_optimized = True
             elif "Insertion" in algo_choice:
                 best_indices = nearest_insertion_route(edited_df); best_indices.append(0); optimized_df = edited_df.iloc[best_indices].reset_index(drop=True); is_optimized = True
             elif "Saving" in algo_choice:
