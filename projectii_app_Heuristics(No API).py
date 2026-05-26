@@ -168,33 +168,24 @@ if uploaded_file is not None:
             edited_df = st.data_editor(df, num_rows="dynamic", use_container_width=True)
 
             st.markdown("---")
-            with st.expander("⚙️ 2. ตั้งค่าพารามิเตอร์รถขนส่ง บรรจุภัณฑ์ และสิ่งแวดล้อม", expanded=True):
-                # --- เปลี่ยนชื่อตัวแปรคอลัมน์ให้สั้นลง ---
+            with st.expander("⚙️ 2. ตั้งค่าพารามิเตอร์รถขนส่งและสิ่งแวดล้อม", expanded=True):
+                # ชื่อคอลัมน์แบบย่อ
                 col_m200 = '200cc'
                 col_m2l = '2L'
                 col_m5l = '5L'
                 col_y65 = 'Yogurt'
                 
-                st.markdown("##### 📦 ตั้งค่าน้ำหนักสุทธิและบรรจุภัณฑ์ (กิโลกรัมต่อหน่วย)")
-                w_col1, w_col2, w_col3, w_col4 = st.columns(4)
-                with w_col1:
-                    w_m200_net = w_col1.number_input("นม 200cc (น้ำหนักเนื้อ)", value=0.200, format="%.3f")
-                    w_m200_pkg = w_col1.number_input("นม 200cc (ขวดพลาสติกขุ่น)", value=0.015, format="%.3f")
-                with w_col2:
-                    w_m2l_net = w_col2.number_input("นม 2L (น้ำหนักเนื้อ)", value=2.000, format="%.3f")
-                    w_m2l_pkg = w_col2.number_input("นม 2L (แกลลอนพลาสติก)", value=0.070, format="%.3f")
-                with w_col3:
-                    w_m5l_net = w_col3.number_input("นม 5L (น้ำหนักเนื้อ)", value=5.000, format="%.3f")
-                    w_m5l_pkg = w_col3.number_input("นม 5L (ถังแกลลอนใหญ่)", value=0.140, format="%.3f")
-                with w_col4:
-                    w_y65_net = w_col4.number_input("โยเกิร์ต 65g (น้ำหนักเนื้อ)", value=0.065, format="%.3f")
-                    w_y65_pkg = w_col4.number_input("โยเกิร์ต 65g (ถ้วยพลาสติก+ฝา)", value=0.006, format="%.3f")
+                # --- ฝังค่าน้ำหนักสุทธิและบรรจุภัณฑ์ (Hardcoded) ---
+                w_m200_net, w_m200_pkg = 0.200, 0.015
+                w_m2l_net, w_m2l_pkg = 2.000, 0.070
+                w_m5l_net, w_m5l_pkg = 5.000, 0.140
+                w_y65_net, w_y65_pkg = 0.065, 0.006
 
-                st.markdown("---")
-                st.markdown("##### 🚚 ตั้งค่าการวิ่งของยานพาหนะและสิ่งแวดล้อม")
                 t_col1, t_col2, t_col3, t_col4 = st.columns(4)
-                with t_col1: empty_speed = st.number_input("ความเร็วรถเปล่า (กม./ชม.)", value=60.0)
-                with t_col2: full_speed = st.number_input("ความเร็วรถตอนหนักสุด (กม./ชม.)", value=40.0)
+                # ปรับความเร็วรถเปล่าเริ่มต้นเป็น 50 กม./ชม.
+                with t_col1: empty_speed = st.number_input("ความเร็วรถเปล่า (กม./ชม.)", value=50.0)
+                # ปรับความเร็วบรรทุกเต็มเริ่มต้นเป็น 35 กม./ชม.
+                with t_col2: full_speed = st.number_input("ความเร็วรถตอนหนักสุด (กม./ชม.)", value=35.0)
                 with t_col3: max_capacity = st.number_input("พิกัดความจุรถสูงสุด (กก.)", value=1200.0)
                 with t_col4: start_time = st.time_input("เวลาออกเดินทาง", datetime.time(11, 0))
                 
@@ -332,7 +323,7 @@ if uploaded_file is not None:
             st.markdown("---")
             st.subheader("📊 4. สรุปผลลัพธ์การเดินรถรวม")
             if has_detailed_columns:
-                st.info("📦 ระบบตรวจพบชื่อคอลัมน์และคำนวณปริมาณสินค้าบวกน้ำหนักบรรจุภัณฑ์เข้าสู่น้ำหนักรวม (Gross Weight) อัตโนมัติ")
+                st.info("📦 ระบบคำนวณปริมาณสินค้าบวกน้ำหนักบรรจุภัณฑ์เข้าสู่น้ำหนักรวม (Gross Weight) อัตโนมัติ (ฝังค่าไว้ในระบบแล้ว)")
 
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("ระยะทางรวมทั้งสิ้น", f"{total_distance:.2f} กม.")
