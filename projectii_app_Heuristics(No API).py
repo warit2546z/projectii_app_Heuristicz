@@ -153,10 +153,9 @@ if uploaded_file:
     st.subheader("🧠 3. การจัดเส้นทาง")
     algo_choice = st.radio("รูปแบบ:", ["1. ลำดับตามไฟล์ดั้งเดิม", "2. Nearest Neighbor", "3. Sweep", "4. Insertion", "5. Saving"])
     
-    # KML Logic for Option 1
     kml_geom = None
     if "1. ลำดับ" in algo_choice:
-        kml_file = st.file_uploader("อัปโหลด KML (ถ้ามีเพื่อแสดงเส้นทางเดิม):", type=["kml"])
+        kml_file = st.file_uploader("อัปโหลด KML (ถ้ามีเพื่อแสดงเส้นทาง):", type=["kml"])
         if kml_file: kml_geom = extract_coords_from_kml(kml_file)
         optimized_df = pd.concat([edited_df, edited_df.iloc[[0]]], ignore_index=True)
     else:
@@ -164,7 +163,7 @@ if uploaded_file:
         algo = indices[algo_choice]
         optimized_df = edited_df.iloc[algo(edited_df) + [0]].reset_index(drop=True)
 
-    # Simulation Logic
+    # Simulation
     weight_list = (pd.to_numeric(optimized_df['200cc'].fillna(0)) * 0.215 + 
                    pd.to_numeric(optimized_df['2L'].fillna(0)) * 2.070 + 
                    pd.to_numeric(optimized_df['5L'].fillna(0)) * 5.140 + 
@@ -173,17 +172,22 @@ if uploaded_file:
     total_w = sum(weight_list)
     curr_w = total_w
     
-    # Render Map & Schedule
+    # Map & Table Rendering
+    st.markdown("---")
+    st.subheader("📊 4. สรุปผลลัพธ์")
+    st.markdown(f"**สถานะความจุรถ:**")
+    st.progress(min(total_w/max_capacity, 1.0))
+    st.write(f"น้ำหนักรวม: {total_w:.2f} กก. / {max_capacity} กก.")
+    
     m = folium.Map(location=[optimized_df['Lat'].mean(), optimized_df['Lon'].mean()], zoom_start=14)
-    # ใช้ kml_geom ถ้ามี หรือดึง OSRM
     if kml_geom:
         AntPath(kml_geom, color="blue", weight=5, delay=800).add_to(m)
     else:
-        # ดึง OSRM ตามปกติ
-        pass 
+        # Drawing straight line fallback
+        folium.PolyLine([[r['Lat'], r['Lon']] for _, r in optimized_df.iterrows()], color="red", dash_array="10").add_to(m)
     
-    # (เพิ่มตารางสรุป และส่วนการคำนวณตามโค้ดเดิมของคุณที่นี่)
-    st.success(f"น้ำหนักรวมบรรทุก: {total_w:.2f} กก.")
-    st.progress(min(total_w/max_capacity, 1.0))
-    st.dataframe(optimized_df)
+    for i, row in optimized_df.iterrows():
+        folium.Marker([row['Lat'], row['Lon']], popup=row['ชื่อสถานที่']).add_to(m)
+        
     st_folium(m, width=1000, height=500)
+    st.dataframe(optimized_df)
