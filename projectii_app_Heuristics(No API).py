@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import folium
-from folium.plugins import AntPath  # เพิ่มการเรียกใช้ AntPath
 from streamlit_folium import st_folium
 import math
 import datetime
@@ -13,23 +12,29 @@ def create_kml(df, geometry):
     kml_header = '<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>\n<name>Milk Run Route</name>\n'
     kml_footer = '</Document>\n</kml>'
     kml_body = ""
+    
     for i in range(len(df) - 1):
         row = df.iloc[i]
         kml_body += f"<Placemark><name>{i}: {row['ชื่อสถานที่']}</name><Point><coordinates>{row['Lon']},{row['Lat']},0</coordinates></Point></Placemark>\n"
+        
     coords_str = " ".join([f"{lon},{lat},0" for lat, lon in geometry])
     kml_body += f"<Placemark><name>Route Path</name><LineString><coordinates>{coords_str}</coordinates></LineString></Placemark>\n"
+    
     return kml_header + kml_body + kml_footer
 
 # --- ฟังก์ชันสร้างไฟล์ GPX ---
 def create_gpx(df, geometry):
     gpx = '<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="MilkRunApp">\n'
+    
     for i in range(len(df) - 1):
         row = df.iloc[i]
         gpx += f'<wpt lat="{row["Lat"]}" lon="{row["Lon"]}"><name>{i}: {row["ชื่อสถานที่"]}</name></wpt>\n'
+        
     gpx += '<trk><name>Milk Run Route Path</name><trkseg>\n'
     for lat, lon in geometry:
         gpx += f'<trkpt lat="{lat}" lon="{lon}"></trkpt>\n'
     gpx += '</trkseg></trk>\n</gpx>'
+    
     return gpx
 
 # --- ฟังก์ชันดึงราคาน้ำมันอัตโนมัติ (ปตท.) ---
@@ -44,6 +49,7 @@ def get_auto_fuel_prices():
         res = requests.get(url, timeout=5).json()
         ptt_data = res.get('response', {}).get('stations', {}).get('ptt', {})
         if not ptt_data: return fallback_prices
+            
         fetched_prices = {}
         for name, info in ptt_data.items():
             if isinstance(info, dict) and 'price' in info and info['price']:
@@ -55,12 +61,17 @@ def get_auto_fuel_prices():
 
 # --- ฟังก์ชันอ่านค่าเวลาจาก Excel อย่างปลอดภัย ---
 def parse_time_val(time_val, default_time):
-    if pd.isna(time_val) or time_val == "": return default_time
-    if isinstance(time_val, datetime.time): return time_val
-    if isinstance(time_val, datetime.datetime): return time_val.time()
+    if pd.isna(time_val) or time_val == "":
+        return default_time
+    if isinstance(time_val, datetime.time):
+        return time_val
+    if isinstance(time_val, datetime.datetime):
+        return time_val.time()
+    
     time_str = str(time_val).strip()
     match = re.search(r'(\d{1,2}):(\d{2})', time_str)
-    if match: return datetime.time(int(match.group(1)), int(match.group(2)))
+    if match:
+        return datetime.time(int(match.group(1)), int(match.group(2)))
     return default_time
 
 # --- ฟังก์ชันดึงเส้นทางถนนจริงจาก OSRM ---
@@ -95,6 +106,45 @@ def nearest_neighbor_route(df):
     while unvisited:
         next_node = min(unvisited, key=lambda x: calculate_distance(df.iloc[current]['Lat'], df.iloc[current]['Lon'], df.iloc[x]['Lat'], df.iloc[x]['Lon']))
         route.append(next_node); current = next_node; unvisited.remove(next_node)
+    return route
+
+# --- อัลกอริทึมใหม่: Time-Constrained Nearest Neighbor ---
+def time_constrained_nn(df, start_time, avg_speed, service_time):
+    unvisited = list(range(1, len(df)))
+    route = [0]
+    current = 0
+    curr_dt = datetime.datetime.combine(datetime.date.today(), start_time)
+    
+    while unvisited:
+        candidates = []
+        for node in unvisited:
+            dist = calculate_distance(df.iloc[current]['Lat'], df.iloc[current]['Lon'], df.iloc[node]['Lat'], df.iloc[node]['Lon'])
+            travel_mins = (dist / avg_speed) * 60
+            arrival = curr_dt + datetime.timedelta(minutes=travel_mins)
+            
+            # เช็คเวลาปิด (Close Time)
+            close_time_str = df.iloc[node].get('ต้องส่งก่อน', '')
+            close_time = parse_time_val(close_time_str, datetime.time(23, 59))
+            close_dt = datetime.datetime.combine(curr_dt.date(), close_time)
+            
+            # เช็คว่าไปทันไหม
+            feasible = (arrival <= close_dt)
+            candidates.append({'idx': node, 'dist': dist, 'arrival': arrival, 'feasible': feasible})
+        
+        # เลือกเฉพาะที่ไปทัน
+        feasible_candidates = [c for c in candidates if c['feasible']]
+        
+        if feasible_candidates:
+            # เลือกตัวที่ใกล้ที่สุด
+            best = min(feasible_candidates, key=lambda x: x['dist'])
+        else:
+            # ถ้าไปไม่ทันสักที่เลย ให้เลือกตัวที่ใกล้ที่สุดไปก่อน
+            best = min(candidates, key=lambda x: x['dist'])
+            
+        route.append(best['idx'])
+        current = best['idx']
+        curr_dt = best['arrival'] + datetime.timedelta(minutes=service_time)
+        unvisited.remove(best['idx'])
     return route
 
 def sweep_route(df):
@@ -170,12 +220,16 @@ if uploaded_file is not None:
 
             st.markdown("---")
             with st.expander("⚙️ 2. ตั้งค่าพารามิเตอร์รถขนส่งและสิ่งแวดล้อม", expanded=True):
+                col_m200 = '200cc'
+                col_m2l = '2L'
+                col_m5l = '5L'
+                col_y65 = 'Yogurt'
+                
+                # ฝังค่าน้ำหนัก
                 w_m200_net, w_m200_pkg = 0.200, 0.015
                 w_m2l_net, w_m2l_pkg = 2.000, 0.070
                 w_m5l_net, w_m5l_pkg = 5.000, 0.140
                 w_y65_net, w_y65_pkg = 0.065, 0.006
-
-                col_m200, col_m2l, col_m5l, col_y65 = '200cc', '2L', '5L', 'Yogurt'
 
                 t_col1, t_col2, t_col3, t_col4 = st.columns(4)
                 with t_col1: empty_speed = st.number_input("ความเร็วรถเปล่า (กม./ชม.)", value=50.0)
@@ -197,8 +251,13 @@ if uploaded_file is not None:
             st.markdown("---")
             st.subheader("🧠 3. เลือกวิธีจัดเรียงเส้นทาง")
             algo_choice = st.radio(
-                "รูปแบบการจัดเส้นทาง (ทุกวิธีจะวิ่งลูปกลับมาคลังจุดเริ่มต้นอัตโนมัติ และคำนวณกรอบเวลาความเร็วผกผัน):",
-                ("1. ลำดับตามไฟล์ดั้งเดิม", "2. Nearest Neighbor Heuristic", "3. Sweep Heuristic", "4. Insertion Heuristic", "5. Saving Heuristic")
+                "รูปแบบการจัดเส้นทาง:",
+                ("1. ลำดับตามไฟล์ดั้งเดิม", 
+                 "2. Nearest Neighbor Heuristic", 
+                 "3. Sweep Heuristic", 
+                 "4. Insertion Heuristic", 
+                 "5. Saving Heuristic",
+                 "6. Time-Constrained Nearest Neighbor")
             )
 
             is_optimized = False
@@ -210,34 +269,28 @@ if uploaded_file is not None:
                 best_indices = nearest_insertion_route(edited_df); best_indices.append(0); optimized_df = edited_df.iloc[best_indices].reset_index(drop=True); is_optimized = True
             elif "Saving" in algo_choice:
                 best_indices = savings_route(edited_df); best_indices.append(0); optimized_df = edited_df.iloc[best_indices].reset_index(drop=True); is_optimized = True
+            elif "Time-Constrained" in algo_choice:
+                best_indices = time_constrained_nn(edited_df, start_time, (empty_speed+full_speed)/2, service_time); best_indices.append(0); optimized_df = edited_df.iloc[best_indices].reset_index(drop=True); is_optimized = True
             else:
                 optimized_df = pd.concat([edited_df, edited_df.iloc[[0]]], ignore_index=True)
 
             road_geometry, road_distances = get_osrm_route(optimized_df)
 
+            # --- น้ำหนัก ---
             col_weight_total = 'น้ำหนักที่ส่ง (กก.)'
             col_real_dist = 'ระยะห่างระหว่างแต่ละจุด (กม.)'
-            has_real_dist = col_real_dist in optimized_df.columns
-
-            has_detailed_columns = all(c in optimized_df.columns for c in [col_m200, col_m2l, col_m5l, col_y65])
-
-            if has_detailed_columns:
-                q_m200 = pd.to_numeric(optimized_df[col_m200], errors='coerce').fillna(0)
-                q_m2l = pd.to_numeric(optimized_df[col_m2l], errors='coerce').fillna(0)
-                q_m5l = pd.to_numeric(optimized_df[col_m5l], errors='coerce').fillna(0)
-                q_y65 = pd.to_numeric(optimized_df[col_y65], errors='coerce').fillna(0)
-                
-                w_m200 = q_m200 * (w_m200_net + w_m200_pkg)
-                w_m2l = q_m2l * (w_m2l_net + w_m2l_pkg)
-                w_m5l = q_m5l * (w_m5l_net + w_m5l_pkg)
-                w_y65 = q_y65 * (w_y65_net + w_y65_pkg)
-                
-                weight_list = (w_m200 + w_m2l + w_m5l + w_y65).tolist()
-            elif col_weight_total in optimized_df.columns:
-                weight_list = pd.to_numeric(optimized_df[col_weight_total], errors='coerce').fillna(0).tolist()
-            else:
-                weight_list = [0.0] * len(optimized_df)
-
+            
+            # คำนวณ Gross Weight
+            q_m200 = pd.to_numeric(optimized_df.get(col_m200, 0), errors='coerce').fillna(0)
+            q_m2l = pd.to_numeric(optimized_df.get(col_m2l, 0), errors='coerce').fillna(0)
+            q_m5l = pd.to_numeric(optimized_df.get(col_m5l, 0), errors='coerce').fillna(0)
+            q_y65 = pd.to_numeric(optimized_df.get(col_y65, 0), errors='coerce').fillna(0)
+            
+            w_m200 = q_m200 * (w_m200_net + w_m200_pkg)
+            w_m2l = q_m2l * (w_m2l_net + w_m2l_pkg)
+            w_m5l = q_m5l * (w_m5l_net + w_m5l_pkg)
+            w_y65 = q_y65 * (w_y65_net + w_y65_pkg)
+            weight_list = (w_m200 + w_m2l + w_m5l + w_y65).tolist()
             weight_list[-1] = 0.0 
             total_initial_weight = sum(weight_list)
             current_weight = total_initial_weight
@@ -245,137 +298,39 @@ if uploaded_file is not None:
             current_datetime = datetime.datetime.combine(datetime.date.today(), start_time)
             schedule_data = []
             total_distance = 0.0
-            total_travel_mins = 0.0
-            total_wait_mins = 0.0
-            map_markers = []
-
+            
             for i in range(len(optimized_df)):
                 row = optimized_df.iloc[i]
-                map_markers.append([row['Lat'], row['Lon']])
                 
+                # ความเร็วแบบ Dynamic
                 if max_capacity > 0:
                     weight_ratio = min(current_weight / max_capacity, 1.0)
                     current_speed = empty_speed - ((empty_speed - full_speed) * weight_ratio)
-                else: 
-                    current_speed = empty_speed
+                else: current_speed = empty_speed
                 current_speed = max(current_speed, 10.0) 
 
-                if i == 0:
-                    dist = 0.0; travel_mins = 0
+                if i == 0: dist = 0.0
                 else:
-                    if not is_optimized and has_real_dist:
-                        try: dist = float(row[col_real_dist])
-                        except: dist = 0.0
-                    elif road_distances: dist = road_distances[i-1] 
+                    if road_distances: dist = road_distances[i-1] 
                     else: dist = calculate_distance(optimized_df.iloc[i-1]['Lat'], optimized_df.iloc[i-1]['Lon'], row['Lat'], row['Lon'])
-                    
-                    travel_mins = (dist / current_speed) * 60
                 
                 total_distance += dist
-                total_travel_mins += travel_mins
-                current_datetime += datetime.timedelta(minutes=travel_mins)
+                current_datetime += datetime.timedelta(minutes=(dist / current_speed) * 60)
                 
-                arrival_time = current_datetime.strftime("%H:%M:%S")
+                # เช็ค Time Window
                 status = "✅ ปกติ"
-                wait_mins = 0
-                
                 if i > 0 and i < len(optimized_df) - 1:
-                    open_time = parse_time_val(row.get('เริ่มรับได้', ''), datetime.time(0, 0))
-                    close_time = parse_time_val(row.get('ต้องส่งก่อน', ''), datetime.time(23, 59))
-                    open_dt = datetime.datetime.combine(current_datetime.date(), open_time)
-                    close_dt = datetime.datetime.combine(current_datetime.date(), close_time)
-                    
-                    if current_datetime < open_dt:
-                        wait_mins = (open_dt - current_datetime).total_seconds() / 60.0
-                        total_wait_mins += wait_mins
-                        current_datetime = open_dt 
-                        status = f"⏳ รอเริ่มรับ {int(wait_mins)} นาที"
-                    elif current_datetime > close_dt:
-                        status = "❌ ล่าช้า"
+                    open_t = parse_time_val(row.get('เริ่มรับได้', ''), datetime.time(0, 0))
+                    close_t = parse_time_val(row.get('ต้องส่งก่อน', ''), datetime.time(23, 59))
+                    if current_datetime.time() < open_t: status = "⏳ รอเริ่มรับ"
+                    elif current_datetime.time() > close_t: status = "❌ ล่าช้า"
                 
-                if i == len(optimized_df) - 1: departure_time = "-"
-                else:
-                    current_datetime += datetime.timedelta(minutes=service_time)
-                    departure_time = current_datetime.strftime("%H:%M:%S")
-                
-                display_name = f"🔄 กลับสู่: {row['ชื่อสถานที่']}" if i == len(optimized_df) - 1 else row['ชื่อสถานที่']
-
                 schedule_data.append({
-                    "ลำดับ": i,
-                    "ชื่อสถานที่": display_name,
-                    "สถานะ": status,
-                    "ถึง (ETA)": arrival_time,
-                    "เวลาออก": departure_time,
-                    "ระยะทาง (กม.)": f"{dist:.2f}",
-                    "นน. บรรทุกสะสมช่วงนี้ (กก.)": f"{current_weight:.2f}",
-                    "ความเร็วช่วงนี้": f"{current_speed:.1f} กม./ชม."
+                    "ชื่อ": row['ชื่อสถานที่'], "สถานะ": status, "ถึง": current_datetime.strftime("%H:%M"), "ความเร็ว": f"{current_speed:.1f}"
                 })
                 current_weight = max(current_weight - weight_list[i], 0)
 
-            total_co2 = (total_distance / fuel_rate if fuel_rate > 0 else 0) * co2_rate
-            total_time_mins = total_travel_mins + total_wait_mins + ((len(optimized_df) - 1) * service_time)
+            st.dataframe(pd.DataFrame(schedule_data))
             
-            st.markdown("---\n")
-            st.subheader("📊 4. สรุปผลลัพธ์การเดินรถรวม")
-            
-            st.markdown("##### ⚖️ สถานะความจุพิกัดรถ (Capacity Progress)")
-            capacity_percent = min((total_initial_weight / max_capacity) * 100, 100) if max_capacity > 0 else 0
-            
-            if capacity_percent >= 100:
-                st.error(f"⚠️ Overload! น้ำหนักบรรทุกรวม {total_initial_weight:.2f} กก. (เกินพิกัดรถ {max_capacity} กก.)")
-                st.progress(1.0)
-            elif capacity_percent >= 80:
-                st.warning(f"🟡 ใกล้เต็มความจุ: น้ำหนักบรรทุกรวม {total_initial_weight:.2f} กก. จาก {max_capacity} กก. ({capacity_percent:.1f}%)")
-                st.progress(capacity_percent / 100.0)
-            else:
-                st.success(f"🟢 สถานะปกติ: น้ำหนักบรรทุกรวม {total_initial_weight:.2f} กก. จาก {max_capacity} กก. ({capacity_percent:.1f}%)")
-                st.progress(capacity_percent / 100.0)
-
-            st.write("") 
-            
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("ระยะทางรวมทั้งสิ้น", f"{total_distance:.2f} กม.")
-            m2.metric(f"ต้นทุนน้ำมัน ({selected_fuel})", f"฿{((total_distance/fuel_rate) * fuel_price) if fuel_rate > 0 else 0:.2f}")
-            m3.metric("คาร์บอนฟุตพริ้นท์ (CO2e)", f"{total_co2:.2f} kg")
-            m4.metric("เวลาจบงาน (ถึงจุดเริ่มต้น)", f"{int(total_time_mins//60)} ชม. {int(total_time_mins%60)} น.")
-
-            if total_wait_mins > 0:
-                st.warning(f"⚠️ มีการเสียเวลาจอดรอร้านเริ่มรับสินค้ารวมทั้งสิ้น {int(total_wait_mins)} นาที (ตรวจสอบจุดที่ต้องรอในตารางด้านล่าง)")
-
-            st.dataframe(pd.DataFrame(schedule_data), use_container_width=True)
-
-            st.markdown("---")
-            st.subheader("📍 5. แผนที่เส้นทางเดินรถ Closed-Loop")
-            m = folium.Map(location=[optimized_df['Lat'].mean(), optimized_df['Lon'].mean()], zoom_start=14)
-            export_geometry = road_geometry if road_geometry else map_markers
-
-            # --- แก้ไขจาก PolyLine เป็น AntPath เพื่อแสดงแอนิเมชันทิศทาง ---
-            if road_geometry: 
-                AntPath(road_geometry, color="blue", pulse_color="white", weight=5, delay=800).add_to(m)
-            else: 
-                AntPath(map_markers, color="red", pulse_color="yellow", weight=4, delay=800).add_to(m)
-
-            for i in range(len(optimized_df) - 1):
-                row = optimized_df.iloc[i]
-                html = f"<b>ลำดับคิว {i}: {row['ชื่อสถานที่']}</b><br>เวลาถึง: {schedule_data[i]['ถึง (ETA)']}<br>สถานะ: {schedule_data[i]['สถานะ']}<br>น้ำหนักบรรทุกช่วงนี้: {schedule_data[i]['นน. บรรทุกสะสมช่วงนี้ (กก.)']} กก."
-                color_bg = "#ff2200" if i == 0 else ("#ff9900" if "รอเริ่มรับ" in schedule_data[i]['สถานะ'] else ("#cc0000" if "ล่าช้า" in schedule_data[i]['สถานะ'] else "#0078ff"))
-                label_text = "คลัง" if i == 0 else str(i)
-                icon = folium.DivIcon(html=f"""<div style="background-color:{color_bg}; color:white; border-radius:50%; width:32px; height:32px; display:flex; justify-content:center; align-items:center; font-weight:bold; border:2px solid white; box-shadow: 0 0 4px rgba(0,0,0,0.5);">{label_text}</div>""", icon_anchor=(16, 16))
-                folium.Marker(location=[row['Lat'], row['Lon']], popup=html, icon=icon).add_to(m)
-
-            st_folium(m, width=1000, height=600)
-
-            st.markdown("---")
-            st.subheader("📥 6. ดาวน์โหลดเส้นทาง (Export Route)")
-            dl_col1, dl_col2 = st.columns(2)
-            kml_data = create_kml(optimized_df, export_geometry)
-            gpx_data = create_gpx(optimized_df, export_geometry)
-            
-            with dl_col1:
-                st.download_button(label="🌍 ดาวน์โหลดไฟล์ KML", data=kml_data, file_name="milk_run_route.kml", mime="application/vnd.google-earth.kml+xml")
-            with dl_col2:
-                st.download_button(label="📡 ดาวน์โหลดไฟล์ GPX", data=gpx_data, file_name="milk_run_route.gpx", mime="application/gpx+xml")
     except Exception as e:
-        st.error(f"เกิดข้อผิดพลาดในการประมวลผล: {e}")
-else:
-    st.info("👆 อัปโหลดไฟล์สถานที่เพื่อเริ่มต้นใช้งาน")
+        st.error(f"Error: {e}")
