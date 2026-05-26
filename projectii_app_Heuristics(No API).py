@@ -169,22 +169,16 @@ if uploaded_file is not None:
 
             st.markdown("---")
             with st.expander("⚙️ 2. ตั้งค่าพารามิเตอร์รถขนส่งและสิ่งแวดล้อม", expanded=True):
-                # ชื่อคอลัมน์แบบย่อ
-                col_m200 = '200cc'
-                col_m2l = '2L'
-                col_m5l = '5L'
-                col_y65 = 'Yogurt'
-                
-                # --- ฝังค่าน้ำหนักสุทธิและบรรจุภัณฑ์ (Hardcoded) ---
+                # ฝังค่าน้ำหนักสุทธิและบรรจุภัณฑ์
                 w_m200_net, w_m200_pkg = 0.200, 0.015
                 w_m2l_net, w_m2l_pkg = 2.000, 0.070
                 w_m5l_net, w_m5l_pkg = 5.000, 0.140
                 w_y65_net, w_y65_pkg = 0.065, 0.006
 
+                col_m200, col_m2l, col_m5l, col_y65 = '200cc', '2L', '5L', 'Yogurt'
+
                 t_col1, t_col2, t_col3, t_col4 = st.columns(4)
-                # ปรับความเร็วรถเปล่าเริ่มต้นเป็น 50 กม./ชม.
                 with t_col1: empty_speed = st.number_input("ความเร็วรถเปล่า (กม./ชม.)", value=50.0)
-                # ปรับความเร็วบรรทุกเต็มเริ่มต้นเป็น 35 กม./ชม.
                 with t_col2: full_speed = st.number_input("ความเร็วรถตอนหนักสุด (กม./ชม.)", value=35.0)
                 with t_col3: max_capacity = st.number_input("พิกัดความจุรถสูงสุด (กก.)", value=1200.0)
                 with t_col4: start_time = st.time_input("เวลาออกเดินทาง", datetime.time(11, 0))
@@ -245,7 +239,8 @@ if uploaded_file is not None:
                 weight_list = [0.0] * len(optimized_df)
 
             weight_list[-1] = 0.0 
-            current_weight = sum(weight_list) 
+            total_initial_weight = sum(weight_list) # นำไปทำหลอดพลังงาน
+            current_weight = total_initial_weight
 
             current_datetime = datetime.datetime.combine(datetime.date.today(), start_time)
             schedule_data = []
@@ -320,11 +315,25 @@ if uploaded_file is not None:
             total_co2 = (total_distance / fuel_rate if fuel_rate > 0 else 0) * co2_rate
             total_time_mins = total_travel_mins + total_wait_mins + ((len(optimized_df) - 1) * service_time)
             
-            st.markdown("---")
+            st.markdown("---\n")
             st.subheader("📊 4. สรุปผลลัพธ์การเดินรถรวม")
-            if has_detailed_columns:
-                st.info("📦 ระบบคำนวณปริมาณสินค้าบวกน้ำหนักบรรจุภัณฑ์เข้าสู่น้ำหนักรวม (Gross Weight) อัตโนมัติ (ฝังค่าไว้ในระบบแล้ว)")
+            
+            # --- สร้างหลอดพลังงานน้ำหนักความจุรถ ---
+            st.markdown("##### ⚖️ สถานะความจุพิกัดรถ (Capacity Progress)")
+            capacity_percent = min((total_initial_weight / max_capacity) * 100, 100) if max_capacity > 0 else 0
+            
+            if capacity_percent >= 100:
+                st.error(f"⚠️ Overload! น้ำหนักบรรทุกรวม {total_initial_weight:.2f} กก. (เกินพิกัดรถ {max_capacity} กก.)")
+                st.progress(1.0)
+            elif capacity_percent >= 80:
+                st.warning(f"🟡 ใกล้เต็มความจุ: น้ำหนักบรรทุกรวม {total_initial_weight:.2f} กก. จาก {max_capacity} กก. ({capacity_percent:.1f}%)")
+                st.progress(capacity_percent / 100.0)
+            else:
+                st.success(f"🟢 สถานะปกติ: น้ำหนักบรรทุกรวม {total_initial_weight:.2f} กก. จาก {max_capacity} กก. ({capacity_percent:.1f}%)")
+                st.progress(capacity_percent / 100.0)
 
+            st.write("") # เว้นบรรทัด
+            
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("ระยะทางรวมทั้งสิ้น", f"{total_distance:.2f} กม.")
             m2.metric(f"ต้นทุนน้ำมัน ({selected_fuel})", f"฿{((total_distance/fuel_rate) * fuel_price) if fuel_rate > 0 else 0:.2f}")
