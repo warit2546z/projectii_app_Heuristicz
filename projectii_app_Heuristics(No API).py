@@ -197,7 +197,7 @@ def savings_route(df):
 # เริ่มหน้าเว็บ Streamlit
 # ==========================================
 st.set_page_config(page_title="Milk Run Optimization & Dashboard", layout="wide")
-st.title("🗺️ ระบบจัดเส้นทางและตรวจสอบกรอบเวลา (Milk Run Logistics)")
+st.title("🚚 SUT Daily Route Planing")
 
 uploaded_file = st.file_uploader("📂 อัปโหลดไฟล์สถานที่ (Excel / CSV)", type=["xlsx", "csv"])
 
